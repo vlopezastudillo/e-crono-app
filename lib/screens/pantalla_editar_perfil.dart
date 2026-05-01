@@ -4,6 +4,7 @@ import '../app_navigation.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
+import '../widgets/ecrono_ui.dart';
 
 const Color _profileBackground = Color(0xFFF3F4F6);
 const Color _profileHeaderBlue = Color(0xFF0A2B4E);
@@ -155,25 +156,10 @@ class _PantallaEditarPerfilState extends State<PantallaEditarPerfil> {
                 keyboardType: TextInputType.phone,
               ),
               const SizedBox(height: AppTheme.spacingLg),
-              SizedBox(
-                height: 52,
-                child: ElevatedButton.icon(
-                  onPressed: _guardarCambios,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: _profileHeaderBlue,
-                    foregroundColor: Colors.white,
-                    elevation: 0,
-                    shape: RoundedRectangleBorder(
-                      borderRadius: BorderRadius.circular(12),
-                    ),
-                    textStyle: const TextStyle(
-                      fontSize: 16,
-                      fontWeight: FontWeight.w700,
-                    ),
-                  ),
-                  icon: const Icon(Icons.save_outlined),
-                  label: const Text('Guardar cambios'),
-                ),
+              EcronoPrimaryButton(
+                text: 'Guardar cambios',
+                icon: Icons.save_outlined,
+                onPressed: _guardarCambios,
               ),
             ],
           ),
@@ -229,23 +215,18 @@ class _ProfilePhotoPlaceholder extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(20),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _profileBorder),
-      ),
+    return EcronoCard(
+      padding: const EdgeInsets.all(AppTheme.spacingMd),
       child: Column(
         children: [
           Container(
-            width: 96,
-            height: 96,
+            width: 84,
+            height: 84,
             decoration: const BoxDecoration(
               color: Color(0xFFDBEAFE),
               shape: BoxShape.circle,
             ),
-            child: const Icon(Icons.person, color: Color(0xFF3B82F6), size: 58),
+            child: const Icon(Icons.person, color: Color(0xFF3B82F6), size: 50),
           ),
           const SizedBox(height: AppTheme.spacingSm),
           Text(
@@ -290,13 +271,8 @@ class _ProfileLocalSummary extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(14),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: _profileBorder),
-      ),
+    return EcronoCard(
+      padding: const EdgeInsets.all(AppTheme.spacingMd),
       child: Column(
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [

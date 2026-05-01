@@ -3,10 +3,10 @@ import 'package:flutter/material.dart';
 import '../app_navigation.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
+import '../widgets/ecrono_ui.dart';
 
 const Color _settingsBackground = Color(0xFFF3F4F6);
 const Color _settingsHeaderBlue = Color(0xFF0A2B4E);
-const Color _settingsBorder = Color(0xFFE5E7EB);
 const Color _settingsTextSecondary = Color(0xFF6B7280);
 
 class PantallaAjustes extends StatelessWidget {
@@ -80,14 +80,9 @@ class _SettingsCard extends StatelessWidget {
   Widget build(BuildContext context) {
     return InkWell(
       onTap: onTap,
-      borderRadius: BorderRadius.circular(16),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _settingsBorder),
-        ),
+      borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+      child: EcronoCard(
+        padding: const EdgeInsets.all(AppTheme.spacingMd),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [

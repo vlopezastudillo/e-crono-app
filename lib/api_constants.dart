@@ -22,6 +22,7 @@ String get apiBaseUrl {
 String get apiMeUrl => '$apiBaseUrl/api/me/';
 String get apiCaregiverPatientsUrl => '$apiBaseUrl/api/caregiver-patients/';
 String get apiVitalSignRecordsUrl => '$apiBaseUrl/api/vital-sign-records/';
+String get apiMedicationRemindersUrl => '$apiBaseUrl/api/medication-reminders/';
 
 // URL para login en el backend
 String get apiLoginUrl => '$apiBaseUrl/api/login/';

@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import 'app_routes.dart';
+import 'screens/pantalla_mis_registros.dart';
+import 'screens/pantalla_registrar_signos_vitales.dart';
 import 'session_helper.dart';
 import 'widgets/ecrono_bottom_navigation.dart';
 
@@ -12,18 +14,36 @@ class AppNavigation {
       return;
     }
 
-    final String routeName = role == 'caregiver'
+    final String routeName = _esRolCuidador(role)
         ? AppRoutes.cuidador
         : AppRoutes.paciente;
 
-    Navigator.pushNamedAndRemoveUntil(
-      context,
-      routeName,
-      (route) => route.isFirst,
-    );
+    Navigator.pushNamedAndRemoveUntil(context, routeName, (route) => false);
   }
 
-  static void abrirSalud(BuildContext context, {bool reemplazar = false}) {
+  static void abrirSalud(
+    BuildContext context, {
+    bool reemplazar = false,
+    int? patientId,
+    String? patientName,
+  }) {
+    if (patientId != null) {
+      final route = MaterialPageRoute(
+        builder: (_) => PantallaRegistrarSignosVitales(
+          patientId: patientId,
+          patientName: patientName,
+        ),
+      );
+
+      if (reemplazar) {
+        Navigator.pushReplacement(context, route);
+        return;
+      }
+
+      Navigator.push(context, route);
+      return;
+    }
+
     _abrirSeccion(context, AppRoutes.salud, reemplazar: reemplazar);
   }
 
@@ -41,6 +61,22 @@ class AppNavigation {
 
   static void abrirMisRegistros(BuildContext context) {
     Navigator.pushNamed(context, AppRoutes.misRegistros);
+  }
+
+  static void abrirRegistrosPaciente(
+    BuildContext context, {
+    required int patientId,
+    required String patientName,
+  }) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PantallaMisRegistros(
+          patientId: patientId,
+          patientName: patientName,
+        ),
+      ),
+    );
   }
 
   static void abrirCalendarioControles(BuildContext context) {
@@ -86,5 +122,10 @@ class AppNavigation {
     }
 
     Navigator.pushNamed(context, routeName);
+  }
+
+  static bool _esRolCuidador(String? role) {
+    final String roleNormalizado = role?.toLowerCase().trim() ?? '';
+    return roleNormalizado == 'caregiver' || roleNormalizado == 'cuidador';
   }
 }

@@ -38,9 +38,9 @@ class EcronoPrimaryButton extends StatelessWidget {
       child: ElevatedButton(
         onPressed: isLoading ? null : onPressed,
         style: ElevatedButton.styleFrom(
-          backgroundColor: AppTheme.actionBlue,
+          backgroundColor: AppTheme.headerBlue,
           foregroundColor: Colors.white,
-          disabledBackgroundColor: AppTheme.actionBlue.withValues(alpha: 0.6),
+          disabledBackgroundColor: AppTheme.headerBlue.withValues(alpha: 0.6),
           disabledForegroundColor: Colors.white,
           minimumSize: const Size.fromHeight(52),
           shape: RoundedRectangleBorder(
@@ -73,9 +73,9 @@ class EcronoSecondaryButton extends StatelessWidget {
       child: OutlinedButton(
         onPressed: onPressed,
         style: OutlinedButton.styleFrom(
-          foregroundColor: AppTheme.actionBlue,
+          foregroundColor: AppTheme.headerBlue,
           minimumSize: const Size.fromHeight(52),
-          side: const BorderSide(color: AppTheme.actionBlue, width: 1.5),
+          side: const BorderSide(color: AppTheme.borderGray, width: 1.5),
           shape: RoundedRectangleBorder(
             borderRadius: BorderRadius.circular(AppTheme.radiusMd),
           ),
@@ -167,7 +167,7 @@ class EcronoTextField extends StatelessWidget {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.circular(AppTheme.radiusMd),
-          borderSide: const BorderSide(color: AppTheme.actionBlue, width: 2),
+          borderSide: const BorderSide(color: AppTheme.headerBlue, width: 2),
         ),
       ),
     );
@@ -232,7 +232,7 @@ class EcronoStatusBadge extends StatelessWidget {
       case EcronoStatusType.danger:
         return const _StatusStyle(color: AppTheme.alertRed, icon: Icons.error);
       case EcronoStatusType.info:
-        return const _StatusStyle(color: AppTheme.actionBlue, icon: Icons.info);
+        return const _StatusStyle(color: AppTheme.headerBlue, icon: Icons.info);
     }
   }
 }

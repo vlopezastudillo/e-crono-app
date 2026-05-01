@@ -5,22 +5,23 @@ import 'package:http/http.dart' as http;
 
 import '../app_navigation.dart';
 import '../api_constants.dart';
+import '../services/pacientes_cuidador_service.dart';
 import '../session_helper.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
+import '../widgets/ecrono_ui.dart';
 
 const Color _clinicalBackground = Color(0xFFF3F4F6);
 const Color _clinicalHeaderBlue = Color(0xFF0A2B4E);
-const Color _clinicalBorder = Color(0xFFE5E7EB);
 const Color _clinicalTextPrimary = Color(0xFF111827);
 const TextStyle _headerTitleStyle = TextStyle(
   color: Colors.white,
-  fontSize: 24,
-  fontWeight: FontWeight.bold,
+  fontSize: 22,
+  fontWeight: FontWeight.w700,
 );
 const TextStyle _screenTitleStyle = TextStyle(
   color: Color(0xFF1F2937),
-  fontSize: 20,
-  fontWeight: FontWeight.bold,
+  fontSize: 18,
+  fontWeight: FontWeight.w700,
 );
 const TextStyle _screenSubtitleStyle = TextStyle(
   color: Color(0xFF6B7280),
@@ -30,7 +31,7 @@ const TextStyle _screenSubtitleStyle = TextStyle(
 );
 const TextStyle _patientNameStyle = TextStyle(
   color: Color(0xFF1F2937),
-  fontSize: 18,
+  fontSize: 17,
   fontWeight: FontWeight.w700,
 );
 const TextStyle _patientDataStyle = TextStyle(
@@ -41,7 +42,7 @@ const TextStyle _patientDataStyle = TextStyle(
 );
 const TextStyle _fieldTitleStyle = TextStyle(
   color: Color(0xFF0A2B4E),
-  fontSize: 14,
+  fontSize: 13,
   fontWeight: FontWeight.w600,
 );
 const TextStyle _hintSmallStyle = TextStyle(
@@ -52,7 +53,14 @@ const TextStyle _hintSmallStyle = TextStyle(
 
 // Pantalla simple para registrar signos vitales en modo demo.
 class PantallaRegistrarSignosVitales extends StatefulWidget {
-  const PantallaRegistrarSignosVitales({super.key});
+  const PantallaRegistrarSignosVitales({
+    super.key,
+    this.patientId,
+    this.patientName,
+  });
+
+  final int? patientId;
+  final String? patientName;
 
   @override
   State<PantallaRegistrarSignosVitales> createState() =>
@@ -61,11 +69,17 @@ class PantallaRegistrarSignosVitales extends StatefulWidget {
 
 class _PantallaRegistrarSignosVitalesState
     extends State<PantallaRegistrarSignosVitales> {
+  final PacientesCuidadorService _pacientesService =
+      const PacientesCuidadorService();
   TextEditingController? _presionSistolicaController;
   TextEditingController? _presionDiastolicaController;
   TextEditingController? _frecuenciaCardiacaController;
   TextEditingController? _glucosaController;
   TextEditingController? _observacionesController;
+  late Future<String?> _roleFuture;
+  late Future<List<Map<String, String>>> _pacientesFuture;
+  int? _selectedPatientId;
+  String? _selectedPatientName;
   bool _guardandoRegistro = false;
 
   TextEditingController get _presionSistolicaInputController =>
@@ -88,6 +102,10 @@ class _PantallaRegistrarSignosVitalesState
     _frecuenciaCardiacaController = TextEditingController();
     _glucosaController = TextEditingController();
     _observacionesController = TextEditingController();
+    _roleFuture = SessionHelper.getRole();
+    _pacientesFuture = _pacientesService.cargarPacientesACargo();
+    _selectedPatientId = widget.patientId;
+    _selectedPatientName = widget.patientName;
   }
 
   @override
@@ -156,6 +174,11 @@ class _PantallaRegistrarSignosVitalesState
       return;
     }
 
+    final int? patientIdParaRegistro = await _obtenerPatientIdParaRegistro();
+    if (patientIdParaRegistro == null && await _usuarioActualEsCuidador()) {
+      return;
+    }
+
     setState(() {
       _guardandoRegistro = true;
     });
@@ -166,6 +189,7 @@ class _PantallaRegistrarSignosVitalesState
       frecuenciaCardiaca: frecuenciaCardiaca,
       glucosa: glucosa,
       observaciones: observaciones,
+      patientIdParaRegistro: patientIdParaRegistro,
     );
     final bool guardadoEnBackend =
         codigoEstadoHttp != null &&
@@ -256,16 +280,72 @@ class _PantallaRegistrarSignosVitalesState
     ).showSnackBar(SnackBar(content: Text(mensaje)));
   }
 
+  Future<bool> _usuarioActualEsCuidador() async {
+    final String? role = await SessionHelper.getRole();
+    return _esRolCuidador(role);
+  }
+
+  Future<int?> _obtenerPatientIdParaRegistro() async {
+    final String? role = await SessionHelper.getRole();
+    final bool esCuidador = _esRolCuidador(role);
+
+    if (!esCuidador) {
+      return widget.patientId;
+    }
+
+    final int? patientId = widget.patientId ?? _selectedPatientId;
+
+    if (patientId != null) {
+      return patientId;
+    }
+
+    if (!mounted) {
+      return null;
+    }
+
+    _mostrarErrorValidacion(
+      'Selecciona un paciente antes de guardar el control.',
+    );
+    return null;
+  }
+
+  bool _esRolCuidador(String? role) {
+    final String roleNormalizado = role?.toLowerCase().trim() ?? '';
+    return roleNormalizado == 'caregiver' || roleNormalizado == 'cuidador';
+  }
+
+  void _abrirHistorialClinico() {
+    final int? patientId = widget.patientId ?? _selectedPatientId;
+    final String? patientName = widget.patientName ?? _selectedPatientName;
+    final String patientNameLimpio = patientName?.trim() ?? '';
+
+    if (patientId != null) {
+      AppNavigation.abrirRegistrosPaciente(
+        context,
+        patientId: patientId,
+        patientName: patientNameLimpio.isEmpty
+            ? 'Paciente seleccionado'
+            : patientNameLimpio,
+      );
+      return;
+    }
+
+    AppNavigation.abrirMisRegistros(context);
+  }
+
   Future<int?> _enviarRegistroAlBackend({
     required int presionSistolica,
     required int presionDiastolica,
     required int? frecuenciaCardiaca,
     required int? glucosa,
     required String observaciones,
+    required int? patientIdParaRegistro,
   }) async {
     try {
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
       final bool haySesion = headers.containsKey('Authorization');
+      final String? role = await SessionHelper.getRole();
+      final bool esCuidador = _esRolCuidador(role);
       final int? patientIdGuardado = await SessionHelper.getPatientId();
 
       final Map<String, dynamic> datosRegistro = {
@@ -283,11 +363,15 @@ class _PantallaRegistrarSignosVitalesState
         datosRegistro['glucosa'] = glucosa;
       }
 
-      if (haySesion) {
-        // En modo autenticado, el backend decide el paciente según el token.
+      if (patientIdParaRegistro != null) {
+        datosRegistro['patient'] = patientIdParaRegistro;
+      } else if (haySesion && !esCuidador) {
+        // En el flujo paciente se mantiene el comportamiento actual.
         if (patientIdGuardado != null) {
           datosRegistro['patient'] = patientIdGuardado;
         }
+      } else if (haySesion && esCuidador) {
+        return null;
       } else {
         // patient: 1 solo se conserva para modo demo sin sesión.
         datosRegistro['patient'] = 1;
@@ -366,9 +450,10 @@ class _PantallaRegistrarSignosVitalesState
                       right: 16,
                       top: 106,
                       child: _PatientSummaryCard(
-                        onAbrirHistorial: () {
-                          AppNavigation.abrirMisRegistros(context);
-                        },
+                        roleFuture: _roleFuture,
+                        patientId: widget.patientId ?? _selectedPatientId,
+                        patientName: widget.patientName ?? _selectedPatientName,
+                        onAbrirHistorial: _abrirHistorialClinico,
                       ),
                     ),
                   ],
@@ -394,6 +479,18 @@ class _PantallaRegistrarSignosVitalesState
                       style: _screenSubtitleStyle,
                     ),
                     const SizedBox(height: 16),
+                    _CaregiverPatientTargetSection(
+                      roleFuture: _roleFuture,
+                      pacientesFuture: _pacientesFuture,
+                      fixedPatientId: widget.patientId,
+                      selectedPatientId: _selectedPatientId,
+                      onPatientSelected: (patient) {
+                        setState(() {
+                          _selectedPatientId = patient?.id;
+                          _selectedPatientName = patient?.name;
+                        });
+                      },
+                    ),
                     _VitalSignCard(
                       icon: Icons.favorite,
                       title: 'Presión Arterial',
@@ -491,42 +588,11 @@ class _PantallaRegistrarSignosVitalesState
                       ),
                     ),
                     const SizedBox(height: 8),
-                    SizedBox(
-                      width: double.infinity,
-                      height: 52,
-                      child: ElevatedButton.icon(
-                        onPressed: _guardandoRegistro ? null : _guardarRegistro,
-                        style: ElevatedButton.styleFrom(
-                          backgroundColor: _clinicalHeaderBlue,
-                          foregroundColor: Colors.white,
-                          disabledBackgroundColor: _clinicalHeaderBlue
-                              .withValues(alpha: 0.65),
-                          shape: RoundedRectangleBorder(
-                            borderRadius: BorderRadius.circular(12),
-                          ),
-                          textStyle: const TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                        icon: _guardandoRegistro
-                            ? const SizedBox(
-                                width: 18,
-                                height: 18,
-                                child: CircularProgressIndicator(
-                                  strokeWidth: 2,
-                                  color: Colors.white,
-                                ),
-                              )
-                            : const Icon(Icons.save_alt),
-                        label: const Text(
-                          'Guardar Registro Local',
-                          style: TextStyle(
-                            fontSize: 16,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
+                    EcronoPrimaryButton(
+                      text: 'Guardar registro',
+                      icon: Icons.save_alt,
+                      isLoading: _guardandoRegistro,
+                      onPressed: _guardarRegistro,
                     ),
                     const SizedBox(height: 12),
                     const _OfflineNotice(),
@@ -560,7 +626,7 @@ class _PantallaRegistrarSignosVitalesState
       hintStyle: const TextStyle(fontSize: 14, color: Color(0xFF9CA3AF)),
       filled: true,
       fillColor: Colors.white,
-      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 14),
+      contentPadding: const EdgeInsets.symmetric(horizontal: 12, vertical: 12),
       border: OutlineInputBorder(
         borderRadius: BorderRadius.circular(8),
         borderSide: BorderSide(color: Colors.grey.shade300),
@@ -598,92 +664,267 @@ class _PantallaRegistrarSignosVitalesState
 }
 
 class _PatientSummaryCard extends StatelessWidget {
-  const _PatientSummaryCard({required this.onAbrirHistorial});
+  const _PatientSummaryCard({
+    required this.roleFuture,
+    required this.patientId,
+    required this.patientName,
+    required this.onAbrirHistorial,
+  });
 
+  final Future<String?> roleFuture;
+  final int? patientId;
+  final String? patientName;
   final VoidCallback onAbrirHistorial;
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: _clinicalBorder),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.06),
-            blurRadius: 18,
-            offset: const Offset(0, 8),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
+    return FutureBuilder<String?>(
+      future: roleFuture,
+      builder: (context, snapshot) {
+        final bool esCuidador = _esRolCuidador(snapshot.data);
+        final String patientNameLimpio = patientName?.trim() ?? '';
+        final bool tienePaciente = patientId != null;
+        final String titulo = esCuidador
+            ? tienePaciente
+                  ? 'Registrando control para:'
+                  : 'Selecciona un paciente para registrar el control'
+            : 'Registrar mi control de salud';
+        final String? detalle = esCuidador
+            ? tienePaciente
+                  ? (patientNameLimpio.isEmpty
+                        ? 'Paciente seleccionado'
+                        : patientNameLimpio)
+                  : null
+            : 'Completa tus signos vitales para actualizar tu historial.';
+
+        return EcronoCard(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
             children: [
-              Container(
-                width: 62,
-                height: 62,
-                decoration: const BoxDecoration(
-                  color: Color(0xFFDBEAFE),
-                  shape: BoxShape.circle,
-                ),
-                child: const Icon(
-                  Icons.person,
-                  color: Color(0xFF3B82F6),
-                  size: 36,
-                ),
-              ),
-              const SizedBox(width: 14),
-              const Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    Text('María Ester Silva', style: _patientNameStyle),
-                    SizedBox(height: 4),
-                    Text(
-                      '72 años - RUT: 6.372.XXX-X',
-                      style: _patientDataStyle,
+              Row(
+                children: [
+                  Container(
+                    width: 56,
+                    height: 56,
+                    decoration: const BoxDecoration(
+                      color: Color(0xFFDBEAFE),
+                      shape: BoxShape.circle,
                     ),
-                  ],
-                ),
+                    child: const Icon(
+                      Icons.person,
+                      color: Color(0xFF3B82F6),
+                      size: 32,
+                    ),
+                  ),
+                  const SizedBox(width: 14),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Text(titulo, style: _patientNameStyle),
+                        if (detalle != null) ...[
+                          const SizedBox(height: 4),
+                          Text(detalle, style: _patientDataStyle),
+                        ],
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 14),
+              EcronoSecondaryButton(
+                text: 'Ver historial clínico',
+                icon: Icons.description,
+                onPressed: onAbrirHistorial,
               ),
             ],
           ),
-          const SizedBox(height: 14),
-          Center(
-            child: OutlinedButton(
-              onPressed: onAbrirHistorial,
-              style: OutlinedButton.styleFrom(
-                foregroundColor: _clinicalHeaderBlue,
-                side: BorderSide(color: Colors.grey.shade300),
-                shape: RoundedRectangleBorder(
-                  borderRadius: BorderRadius.circular(30),
-                ),
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 22,
-                  vertical: 11,
-                ),
-                textStyle: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.w600,
-                ),
-              ),
-              child: const Text(
-                'Ver historial clínico',
-                style: TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.normal,
-                  color: _clinicalHeaderBlue,
-                ),
-              ),
-            ),
-          ),
-        ],
-      ),
+        );
+      },
     );
+  }
+
+  static bool _esRolCuidador(String? role) {
+    final String roleNormalizado = role?.toLowerCase().trim() ?? '';
+    return roleNormalizado == 'caregiver' || roleNormalizado == 'cuidador';
+  }
+}
+
+class _CaregiverPatientTargetSection extends StatelessWidget {
+  const _CaregiverPatientTargetSection({
+    required this.roleFuture,
+    required this.pacientesFuture,
+    required this.fixedPatientId,
+    required this.selectedPatientId,
+    required this.onPatientSelected,
+  });
+
+  final Future<String?> roleFuture;
+  final Future<List<Map<String, String>>> pacientesFuture;
+  final int? fixedPatientId;
+  final int? selectedPatientId;
+  final ValueChanged<_PatientOption?> onPatientSelected;
+
+  @override
+  Widget build(BuildContext context) {
+    return FutureBuilder<String?>(
+      future: roleFuture,
+      builder: (context, snapshot) {
+        final bool esCuidador = _esRolCuidador(snapshot.data);
+
+        if (!esCuidador) {
+          return const SizedBox.shrink();
+        }
+
+        if (fixedPatientId != null) {
+          return const SizedBox.shrink();
+        }
+
+        return FutureBuilder<List<Map<String, String>>>(
+          future: pacientesFuture,
+          builder: (context, patientSnapshot) {
+            if (patientSnapshot.connectionState != ConnectionState.done) {
+              return const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: EcronoCard(
+                  child: Row(
+                    children: [
+                      SizedBox(
+                        width: 20,
+                        height: 20,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      ),
+                      SizedBox(width: 12),
+                      Expanded(
+                        child: Text(
+                          'Cargando pacientes...',
+                          style: TextStyle(
+                            color: Color(0xFF6B7280),
+                            fontSize: 14,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            final List<_PatientOption> patientOptions =
+                (patientSnapshot.data ?? <Map<String, String>>[])
+                    .map(_PatientOption.fromMap)
+                    .whereType<_PatientOption>()
+                    .toList();
+
+            if (patientOptions.isEmpty) {
+              return const Padding(
+                padding: EdgeInsets.only(bottom: 12),
+                child: EcronoCard(
+                  child: Row(
+                    crossAxisAlignment: CrossAxisAlignment.start,
+                    children: [
+                      Icon(Icons.info, color: _clinicalHeaderBlue),
+                      SizedBox(width: 10),
+                      Expanded(
+                        child: Text(
+                          'No se encontraron pacientes disponibles para registrar el control.',
+                          style: TextStyle(
+                            color: Color(0xFF374151),
+                            fontSize: 14,
+                            height: 1.35,
+                          ),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              );
+            }
+
+            final Set<int> availableIds = patientOptions
+                .map((patient) => patient.id)
+                .toSet();
+            final int? dropdownValue = availableIds.contains(selectedPatientId)
+                ? selectedPatientId
+                : null;
+
+            return Padding(
+              padding: const EdgeInsets.only(bottom: 12),
+              child: EcronoCard(
+                child: DropdownButtonFormField<int>(
+                  initialValue: dropdownValue,
+                  isExpanded: true,
+                  decoration: InputDecoration(
+                    labelText: 'Paciente',
+                    prefixIcon: const Icon(
+                      Icons.person,
+                      color: _clinicalHeaderBlue,
+                    ),
+                    border: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    enabledBorder: OutlineInputBorder(
+                      borderRadius: BorderRadius.circular(8),
+                      borderSide: BorderSide(color: Colors.grey.shade300),
+                    ),
+                    focusedBorder: const OutlineInputBorder(
+                      borderSide: BorderSide(
+                        color: _clinicalHeaderBlue,
+                        width: 1.5,
+                      ),
+                    ),
+                  ),
+                  hint: const Text('Selecciona un paciente'),
+                  items: patientOptions.map((patient) {
+                    return DropdownMenuItem<int>(
+                      value: patient.id,
+                      child: Text(patient.name),
+                    );
+                  }).toList(),
+                  onChanged: (patientId) {
+                    _PatientOption? selectedPatient;
+
+                    for (final patient in patientOptions) {
+                      if (patient.id == patientId) {
+                        selectedPatient = patient;
+                        break;
+                      }
+                    }
+
+                    onPatientSelected(selectedPatient);
+                  },
+                ),
+              ),
+            );
+          },
+        );
+      },
+    );
+  }
+
+  static bool _esRolCuidador(String? role) {
+    final String roleNormalizado = role?.toLowerCase().trim() ?? '';
+    return roleNormalizado == 'caregiver' || roleNormalizado == 'cuidador';
+  }
+}
+
+class _PatientOption {
+  const _PatientOption({required this.id, required this.name});
+
+  final int id;
+  final String name;
+
+  static _PatientOption? fromMap(Map<String, String> patient) {
+    final int? id = int.tryParse(patient['patient_id'] ?? '');
+    final String name = patient['patient'] ?? 'Paciente';
+
+    if (id == null) {
+      return null;
+    }
+
+    return _PatientOption(id: id, name: name);
   }
 }
 
@@ -700,27 +941,24 @@ class _VitalSignCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Container(
-      margin: const EdgeInsets.only(bottom: 12),
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(12),
-        border: Border.all(color: Colors.grey.shade200),
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.stretch,
-        children: [
-          Row(
-            children: [
-              Icon(icon, size: 18, color: _clinicalHeaderBlue),
-              const SizedBox(width: 8),
-              Text(title, style: _fieldTitleStyle),
-            ],
-          ),
-          const SizedBox(height: 12),
-          child,
-        ],
+    return Padding(
+      padding: const EdgeInsets.only(bottom: 10),
+      child: EcronoCard(
+        padding: const EdgeInsets.all(14),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            Row(
+              children: [
+                Icon(icon, size: 18, color: _clinicalHeaderBlue),
+                const SizedBox(width: 8),
+                Text(title, style: _fieldTitleStyle),
+              ],
+            ),
+            const SizedBox(height: 10),
+            child,
+          ],
+        ),
       ),
     );
   }

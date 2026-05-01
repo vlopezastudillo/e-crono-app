@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../app_navigation.dart';
 import '../api_constants.dart';
+import '../services/medication_reminders_service.dart';
 import '../session_helper.dart';
 import 'pantalla_inicial.dart';
 import '../theme/app_theme.dart';
@@ -53,13 +54,17 @@ class VistaPaciente extends StatefulWidget {
 }
 
 class _VistaPacienteState extends State<VistaPaciente> {
+  final MedicationRemindersService _medicationRemindersService =
+      const MedicationRemindersService();
   late Future<_PacienteResumen?> _pacienteFuture;
+  late Future<MedicationRemindersResult> _recordatoriosFuture;
 
   @override
   void initState() {
     super.initState();
     // Carga los datos reales del paciente al abrir la pantalla.
     _pacienteFuture = _cargarPaciente();
+    _recordatoriosFuture = _medicationRemindersService.cargarRecordatorios();
   }
 
   Future<_PacienteResumen?> _cargarPaciente() async {
@@ -259,55 +264,29 @@ class _VistaPacienteState extends State<VistaPaciente> {
                 icon: Icons.medication,
               ),
               const SizedBox(height: 8),
-              Padding(
-                padding: const EdgeInsets.symmetric(horizontal: 16),
-                child: Column(
-                  children: [
-                    const _MedicationItem(
-                      name: 'Enalapril 10 mg.',
-                      schedule: 'Tomado a las 08:00.',
-                      statusText: 'Tomado',
-                      statusType: EcronoStatusType.success,
-                    ),
-                    const SizedBox(height: 12),
-                    const _MedicationItem(
-                      name: 'Metformina 850 mg.',
-                      schedule: 'Pendiente - 13:00 hrs.',
-                      statusText: 'TOMAR AHORA',
-                      statusType: EcronoStatusType.danger,
-                    ),
-                    const SizedBox(height: 12),
-                    Container(
-                      padding: const EdgeInsets.all(14),
-                      decoration: BoxDecoration(
-                        color: const Color(0xFFEFF6FF),
-                        borderRadius: BorderRadius.circular(16),
-                      ),
-                      child: const Row(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Icon(
-                            Icons.notifications_active,
-                            color: Color(0xFF3B82F6),
-                            size: 20,
-                          ),
-                          SizedBox(width: 10),
-                          Expanded(
-                            child: Text(
-                              '¿No olvide tomar un medicamento de las 13:00 hrs!',
-                              style: TextStyle(
-                                color: Color(0xFF1E3A8A),
-                                fontSize: 11,
-                                fontWeight: FontWeight.w600,
-                                height: 1.35,
-                              ),
-                            ),
-                          ),
-                        ],
-                      ),
-                    ),
-                  ],
-                ),
+              FutureBuilder<MedicationRemindersResult>(
+                future: _recordatoriosFuture,
+                builder: (context, snapshot) {
+                  if (snapshot.connectionState != ConnectionState.done) {
+                    return const _MedicationRemindersLoading();
+                  }
+
+                  final MedicationRemindersResult result =
+                      snapshot.data ??
+                      const MedicationRemindersResult(
+                        recordatorios: [],
+                        usandoDemo: false,
+                      );
+                  final List<MedicationReminder> recordatoriosActivos = result
+                      .recordatorios
+                      .where((recordatorio) => recordatorio.activo)
+                      .toList();
+
+                  return _MedicationRemindersBlock(
+                    recordatorios: recordatoriosActivos,
+                    usandoDemo: result.usandoDemo,
+                  );
+                },
               ),
               const SizedBox(height: 88),
             ],
@@ -761,52 +740,165 @@ class _ControlItem extends StatelessWidget {
   }
 }
 
-class _MedicationItem extends StatelessWidget {
-  const _MedicationItem({
-    required this.name,
-    required this.schedule,
-    required this.statusText,
-    required this.statusType,
-  });
-
-  final String name;
-  final String schedule;
-  final String statusText;
-  final EcronoStatusType statusType;
-
-  bool get _isPending => statusType == EcronoStatusType.danger;
+class _MedicationRemindersLoading extends StatelessWidget {
+  const _MedicationRemindersLoading();
 
   @override
   Widget build(BuildContext context) {
-    final Color backgroundColor = _isPending
-        ? const Color(0xFFFEE2E2)
-        : const Color(0xFFDCFCE7);
-    final Color borderColor = _isPending
-        ? const Color(0xFFFCA5A5)
-        : const Color(0xFF86EFAC);
-    final Color iconColor = _isPending
-        ? const Color(0xFFEF4444)
-        : const Color(0xFF16A34A);
-    final IconData icon = _isPending ? Icons.error : Icons.check_circle;
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16),
+      child: _DashboardCard(
+        padding: EdgeInsets.all(14),
+        child: Row(
+          children: [
+            SizedBox(
+              width: 20,
+              height: 20,
+              child: CircularProgressIndicator(strokeWidth: 2),
+            ),
+            SizedBox(width: 12),
+            Expanded(
+              child: Text(
+                'Cargando recordatorios...',
+                style: _dashboardDescriptionStyle,
+              ),
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
 
+class _MedicationRemindersBlock extends StatelessWidget {
+  const _MedicationRemindersBlock({
+    required this.recordatorios,
+    required this.usandoDemo,
+  });
+
+  final List<MedicationReminder> recordatorios;
+  final bool usandoDemo;
+
+  @override
+  Widget build(BuildContext context) {
+    if (recordatorios.isEmpty) {
+      return const Padding(
+        padding: EdgeInsets.symmetric(horizontal: 16),
+        child: _DashboardCard(
+          padding: EdgeInsets.all(14),
+          child: Row(
+            children: [
+              Icon(
+                Icons.medication_outlined,
+                color: _dashboardHeaderBlue,
+                size: 22,
+              ),
+              SizedBox(width: 10),
+              Expanded(
+                child: Text(
+                  'No tienes recordatorios activos.',
+                  style: _dashboardDescriptionStyle,
+                ),
+              ),
+            ],
+          ),
+        ),
+      );
+    }
+
+    return Padding(
+      padding: const EdgeInsets.symmetric(horizontal: 16),
+      child: Column(
+        children: [
+          if (usandoDemo) ...[
+            const _MedicationDemoNotice(),
+            const SizedBox(height: 10),
+          ],
+          ...recordatorios.expand((recordatorio) sync* {
+            if (recordatorio != recordatorios.first) {
+              yield const SizedBox(height: 12);
+            }
+
+            yield _MedicationItem(recordatorio: recordatorio);
+          }),
+        ],
+      ),
+    );
+  }
+}
+
+class _MedicationDemoNotice extends StatelessWidget {
+  const _MedicationDemoNotice();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: const Color(0xFFEFF6FF),
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(color: const Color(0xFFBFDBFE)),
+      ),
+      child: const Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Icon(Icons.info_outline, color: Color(0xFF2563EB), size: 18),
+          SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              'Mostrando recordatorios de demostración porque no se pudo cargar la API.',
+              style: TextStyle(
+                color: Color(0xFF1E3A8A),
+                fontSize: 11,
+                fontWeight: FontWeight.w600,
+                height: 1.35,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _MedicationItem extends StatelessWidget {
+  const _MedicationItem({required this.recordatorio});
+
+  final MedicationReminder recordatorio;
+
+  @override
+  Widget build(BuildContext context) {
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
-        color: backgroundColor,
-        border: Border.all(color: borderColor),
+        color: Colors.white,
+        border: Border.all(color: _dashboardBorder),
         borderRadius: BorderRadius.circular(16),
       ),
       child: Row(
         crossAxisAlignment: CrossAxisAlignment.center,
         children: [
-          Icon(icon, color: iconColor, size: 28),
+          Container(
+            width: 34,
+            height: 34,
+            decoration: BoxDecoration(
+              color: const Color(0xFFEFF6FF),
+              borderRadius: BorderRadius.circular(17),
+            ),
+            child: const Icon(
+              Icons.medication,
+              color: _dashboardHeaderBlue,
+              size: 18,
+            ),
+          ),
           const SizedBox(width: 12),
           Expanded(
             child: Column(
               crossAxisAlignment: CrossAxisAlignment.start,
               children: [
                 Text(
-                  name,
+                  recordatorio.nombreMedicamento,
                   style: const TextStyle(
                     fontSize: 13,
                     fontWeight: FontWeight.w700,
@@ -814,25 +906,18 @@ class _MedicationItem extends StatelessWidget {
                   ),
                 ),
                 const SizedBox(height: 4),
-                Text(schedule, style: _dashboardDescriptionStyle),
+                Text(
+                  '${recordatorio.dosis} • ${recordatorio.hora} • ${recordatorio.frecuencia}',
+                  style: _dashboardDescriptionStyle,
+                ),
               ],
             ),
           ),
-          if (_isPending) ...[
+          if (recordatorio.isDemo) ...[
             const SizedBox(width: 8),
-            Container(
-              padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 7),
-              decoration: BoxDecoration(
-                color: const Color(0xFFEF4444),
-                borderRadius: BorderRadius.circular(16),
-              ),
-              child: Text(
-                statusText,
-                style: _dashboardSmallBoldStyle.copyWith(
-                  color: Colors.white,
-                  fontWeight: FontWeight.bold,
-                ),
-              ),
+            const EcronoStatusBadge(
+              text: 'Demo',
+              status: EcronoStatusType.info,
             ),
           ],
         ],

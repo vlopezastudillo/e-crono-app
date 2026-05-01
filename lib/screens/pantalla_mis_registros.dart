@@ -1,27 +1,33 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
-import '../api_constants.dart';
 import '../route_observer.dart';
+import '../services/registros_clinicos_service.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_ui.dart';
+import 'detalle_registro_clinico.dart';
 
 const Color _clinicalBackground = Color(0xFFF3F4F6);
 const Color _clinicalHeaderBlue = Color(0xFF0A2B4E);
 const Color _clinicalBorder = Color(0xFFE5E7EB);
 const Color _clinicalTextPrimary = Color(0xFF111827);
 const Color _clinicalTextSecondary = Color(0xFF6B7280);
-const Color _clinicalTextTertiary = Color(0xFF374151);
-const Color _clinicalAlert = Color(0xFFEF4444);
-const Color _clinicalWarning = Color(0xFFF59E0B);
 const Color _clinicalSoftBlue = Color(0xFFEFF6FF);
 
 // Pantalla simple para listar los registros clinicos del paciente.
 class PantallaMisRegistros extends StatefulWidget {
-  const PantallaMisRegistros({super.key});
+  const PantallaMisRegistros({
+    super.key,
+    this.patientId,
+    this.patientName,
+    this.registrosFiltrados,
+    this.fechaFiltrada,
+  });
+
+  final int? patientId;
+  final String? patientName;
+  final List<Map<String, String>>? registrosFiltrados;
+  final DateTime? fechaFiltrada;
 
   @override
   State<PantallaMisRegistros> createState() => _PantallaMisRegistrosState();
@@ -29,14 +35,21 @@ class PantallaMisRegistros extends StatefulWidget {
 
 class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
     with RouteAware {
+  final RegistrosClinicosService _registrosService =
+      const RegistrosClinicosService();
   late Future<List<Map<String, String>>> _registrosFuture;
+  String? _role;
+  String? _pacienteSeleccionadoFiltro;
+  RegistroClinicoSemaforo? _estadoSeleccionadoFiltro;
+  DateTime? _fechaFiltro;
   bool _suscritoARuta = false;
 
   @override
   void initState() {
     super.initState();
-    // Carga la lista de registros al abrir la pantalla.
-    _registrosFuture = _cargarRegistros();
+    // Carga la lista completa salvo cuando otra pantalla ya entrega un filtro.
+    _registrosFuture = _cargarRegistrosIniciales();
+    _cargarRolUsuario();
   }
 
   @override
@@ -64,203 +77,299 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
 
   void _recargarRegistros() {
     setState(() {
-      _registrosFuture = _cargarRegistros();
+      _registrosFuture = _cargarRegistrosIniciales();
     });
   }
 
-  Future<List<Map<String, String>>> _cargarRegistros() async {
-    try {
-      // Usa el token guardado; sin sesión se conserva el fallback demo.
-      final Map<String, String> headers = await SessionHelper.getAuthHeaders();
+  Future<List<Map<String, String>>> _cargarRegistrosIniciales() {
+    final List<Map<String, String>>? registrosFiltrados =
+        widget.registrosFiltrados;
 
-      if (!headers.containsKey('Authorization')) {
-        return [];
-      }
-
-      final response = await http.get(
-        Uri.parse(apiVitalSignRecordsUrl),
-        headers: headers,
-      );
-
-      debugPrint('GET mis registros: estado HTTP ${response.statusCode}');
-      debugPrint('GET mis registros: respuesta ${response.body}');
-
-      if (response.statusCode != 200) {
-        return [];
-      }
-
-      final dynamic data = jsonDecode(response.body);
-      final List<dynamic> items;
-
-      if (data is List) {
-        items = data;
-      } else if (data is Map<String, dynamic> && data['results'] is List) {
-        items = data['results'] as List<dynamic>;
-      } else {
-        return [];
-      }
-
-      final List<Map<String, dynamic>> registros = items
-          .whereType<Map<String, dynamic>>()
-          .toList();
-
-      // Ordena por fecha_registro real: más recientes primero.
-      registros.sort(_compararRegistrosPorFechaDescendente);
-
-      return registros.map((registro) {
-        final dynamic patientData = registro['patient'];
-        final dynamic registradoPorData = registro['registrado_por'];
-
-        final String patient = patientData is Map<String, dynamic>
-            ? patientData['username']?.toString() ??
-                  patientData['name']?.toString() ??
-                  patientData['id']?.toString() ??
-                  'No disponible'
-            : patientData?.toString() ?? 'No disponible';
-
-        final String? registradoPor = registradoPorData is Map<String, dynamic>
-            ? _leerTexto(registradoPorData['username']) ??
-                  _leerTexto(registradoPorData['name']) ??
-                  _leerTexto(registradoPorData['id'])
-            : _leerTexto(registradoPorData);
-        final String fechaOriginal =
-            registro['fecha_registro']?.toString() ??
-            registro['fecha']?.toString() ??
-            registro['date']?.toString() ??
-            registro['created_at']?.toString() ??
-            'No disponible';
-
-        final Map<String, String> registroParseado = {
-          'patient': patient,
-          'fecha': _formatearFechaRegistro(fechaOriginal),
-          'presion_sistolica':
-              registro['presion_sistolica']?.toString() ??
-              registro['systolic_pressure']?.toString() ??
-              'No disponible',
-          'presion_diastolica':
-              registro['presion_diastolica']?.toString() ??
-              registro['diastolic_pressure']?.toString() ??
-              'No disponible',
-          'frecuencia_cardiaca':
-              registro['frecuencia_cardiaca']?.toString() ??
-              registro['heart_rate']?.toString() ??
-              registro['pulse']?.toString() ??
-              'No informado',
-          'glucosa':
-              registro['glucosa']?.toString() ??
-              registro['glucose']?.toString() ??
-              'No informado',
-          'observaciones':
-              registro['observaciones']?.toString() ??
-              registro['notes']?.toString() ??
-              'Sin observaciones',
-        };
-
-        if (registradoPor != null) {
-          registroParseado['registrado_por'] = registradoPor;
-        }
-
-        return registroParseado;
-      }).toList();
-    } catch (_) {
-      // Si la API falla, la pantalla mantiene los datos demo.
-      return [];
+    if (registrosFiltrados != null) {
+      return Future.value(registrosFiltrados);
     }
+
+    return _registrosService.cargarMisRegistros();
   }
 
-  int _compararRegistrosPorFechaDescendente(
-    Map<String, dynamic> a,
-    Map<String, dynamic> b,
-  ) {
-    final DateTime? fechaA = _leerFechaRegistro(a);
-    final DateTime? fechaB = _leerFechaRegistro(b);
+  Future<void> _cargarRolUsuario() async {
+    final String? role = await SessionHelper.getRole();
 
-    if (fechaA == null && fechaB == null) {
-      return 0;
+    if (!mounted) {
+      return;
     }
 
-    if (fechaA == null) {
-      return 1;
-    }
-
-    if (fechaB == null) {
-      return -1;
-    }
-
-    return fechaB.compareTo(fechaA);
-  }
-
-  DateTime? _leerFechaRegistro(Map<String, dynamic> registro) {
-    final String? fecha = _leerTexto(registro['fecha_registro']);
-
-    if (fecha == null) {
-      return null;
-    }
-
-    try {
-      return DateTime.parse(fecha);
-    } catch (_) {
-      // Si alguna fecha falla, ese registro queda al final de la lista.
-      return null;
-    }
-  }
-
-  String _formatearFechaRegistro(String fechaOriginal) {
-    late final DateTime fechaLocal;
-
-    try {
-      // Convierte la fecha ISO/UTC del backend a la hora local del dispositivo.
-      fechaLocal = DateTime.parse(fechaOriginal).toLocal();
-    } catch (_) {
-      return fechaOriginal;
-    }
-
-    // Muestra fechas ISO como 26-04-2026 17:38; si no parsea, queda original.
-    final String dia = _dosDigitos(fechaLocal.day);
-    final String mes = _dosDigitos(fechaLocal.month);
-    final String hora = _dosDigitos(fechaLocal.hour);
-    final String minuto = _dosDigitos(fechaLocal.minute);
-
-    return '$dia-$mes-${fechaLocal.year} $hora:$minuto';
-  }
-
-  String _dosDigitos(int valor) {
-    return valor.toString().padLeft(2, '0');
-  }
-
-  String? _leerTexto(dynamic valor) {
-    final String texto = valor?.toString().trim() ?? '';
-    return texto.isEmpty ? null : texto;
+    setState(() {
+      _role = role;
+    });
   }
 
   // Lista local de apoyo para mostrar una demo si la API no trae datos.
   List<Map<String, String>> _obtenerRegistrosDemo() {
-    return const [
-      {
-        'patient': 'Paciente demo',
-        'fecha': '24/04/2026',
-        'presion_sistolica': '122',
-        'presion_diastolica': '78',
-        'frecuencia_cardiaca': '74',
-        'observaciones': 'Control estable, sin síntomas de alarma.',
-      },
-      {
-        'patient': 'Paciente demo',
-        'fecha': '17/04/2026',
-        'presion_sistolica': '128',
-        'presion_diastolica': '82',
-        'frecuencia_cardiaca': '76',
-        'observaciones': 'Presión levemente elevada, reforzar adherencia.',
-      },
-      {
-        'patient': 'Paciente demo',
-        'fecha': '10/04/2026',
-        'presion_sistolica': '118',
-        'presion_diastolica': '76',
-        'frecuencia_cardiaca': '72',
-        'observaciones': 'Control estable posterior a toma de medicamento.',
-      },
-    ];
+    return _registrosService.obtenerRegistrosDemoPaciente();
+  }
+
+  List<Map<String, String>> _filtrarRegistrosPorPaciente(
+    List<Map<String, String>> registros,
+  ) {
+    final int? patientId = widget.patientId;
+
+    if (patientId == null) {
+      return registros;
+    }
+
+    final String patientIdTexto = patientId.toString();
+    return registros.where((registro) {
+      return registro['patient_id'] == patientIdTexto;
+    }).toList();
+  }
+
+  List<Map<String, String>> _aplicarFiltrosPacienteFecha(
+    List<Map<String, String>> registros,
+  ) {
+    final String? pacienteSeleccionado = _pacienteSeleccionadoFiltro;
+    final DateTime? fechaFiltro = _fechaFiltro;
+
+    return registros.where((registro) {
+      final bool coincidePacienteSeleccionado =
+          pacienteSeleccionado == null ||
+          _coincidePacienteSeleccionado(registro, pacienteSeleccionado);
+      final bool coincideFecha =
+          fechaFiltro == null || _coincideFecha(registro, fechaFiltro);
+
+      return coincidePacienteSeleccionado && coincideFecha;
+    }).toList();
+  }
+
+  List<Map<String, String>> _aplicarFiltroEstado(
+    List<Map<String, String>> registros,
+    RegistroClinicoSemaforo? estadoSeleccionado,
+  ) {
+    if (estadoSeleccionado == null) {
+      return registros;
+    }
+
+    return registros.where((registro) {
+      return _estadoGeneralRegistro(registro) == estadoSeleccionado;
+    }).toList();
+  }
+
+  bool _coincidePacienteSeleccionado(
+    Map<String, String> registro,
+    String pacienteSeleccionado,
+  ) {
+    final String pacienteRegistro = _normalizarTexto(registro['patient'] ?? '');
+    final String seleccionadoNormalizado = _normalizarTexto(
+      pacienteSeleccionado,
+    );
+
+    return pacienteRegistro == seleccionadoNormalizado;
+  }
+
+  List<String> _pacientesDisponibles(List<Map<String, String>> registros) {
+    final Map<String, String> pacientesPorNombreNormalizado = {};
+
+    for (final registro in registros) {
+      final String nombre = _limpiarNombrePaciente(registro['patient'] ?? '');
+      final String nombreNormalizado = _normalizarTexto(nombre);
+
+      if (nombre.isNotEmpty && nombreNormalizado.isNotEmpty) {
+        pacientesPorNombreNormalizado[nombreNormalizado] = nombre;
+      }
+    }
+
+    final List<String> pacientes = pacientesPorNombreNormalizado.values
+        .toList();
+    pacientes.sort((a, b) => a.toLowerCase().compareTo(b.toLowerCase()));
+    return pacientes;
+  }
+
+  List<RegistroClinicoSemaforo> _estadosDisponibles(
+    List<Map<String, String>> registros,
+  ) {
+    final Set<RegistroClinicoSemaforo> estados = {};
+
+    for (final registro in registros) {
+      estados.add(_estadoGeneralRegistro(registro));
+    }
+
+    final List<RegistroClinicoSemaforo> estadosOrdenados = estados.toList();
+    estadosOrdenados.sort((a, b) {
+      return _ordenEstado(a).compareTo(_ordenEstado(b));
+    });
+    return estadosOrdenados;
+  }
+
+  RegistroClinicoSemaforo _estadoGeneralRegistro(Map<String, String> registro) {
+    return RegistroClinicoSemaforoHelper.calcular(registro).semaforo;
+  }
+
+  int _ordenEstado(RegistroClinicoSemaforo estado) {
+    switch (estado) {
+      case RegistroClinicoSemaforo.estable:
+        return 0;
+      case RegistroClinicoSemaforo.atencion:
+        return 1;
+      case RegistroClinicoSemaforo.alerta:
+        return 2;
+      case RegistroClinicoSemaforo.sinDato:
+        return 3;
+    }
+  }
+
+  bool _coincideFecha(Map<String, String> registro, DateTime fechaFiltro) {
+    final DateTime? fechaRegistro = RegistrosClinicosService.leerFechaRegistro(
+      registro,
+    );
+
+    if (fechaRegistro == null) {
+      return false;
+    }
+
+    return _mismoDia(fechaRegistro, fechaFiltro);
+  }
+
+  bool _mismoDia(DateTime primeraFecha, DateTime segundaFecha) {
+    return primeraFecha.year == segundaFecha.year &&
+        primeraFecha.month == segundaFecha.month &&
+        primeraFecha.day == segundaFecha.day;
+  }
+
+  String _normalizarTexto(String valor) {
+    return _limpiarNombrePaciente(valor).toLowerCase().trim();
+  }
+
+  String _limpiarNombrePaciente(String valor) {
+    final String sinPrefijo = valor.replaceFirst(
+      RegExp(r'^Paciente:\s*', caseSensitive: false),
+      '',
+    );
+    return sinPrefijo.trim();
+  }
+
+  Future<void> _seleccionarFecha() async {
+    final DateTime ahora = DateTime.now();
+    final DateTime? fechaSeleccionada = await showDatePicker(
+      context: context,
+      initialDate: _fechaFiltro ?? widget.fechaFiltrada ?? ahora,
+      firstDate: DateTime(2000),
+      lastDate: DateTime(2100),
+      helpText: 'Filtrar por fecha',
+      cancelText: 'Cancelar',
+      confirmText: 'Aplicar',
+    );
+
+    if (fechaSeleccionada == null || !mounted) {
+      return;
+    }
+
+    setState(() {
+      _fechaFiltro = fechaSeleccionada;
+    });
+  }
+
+  void _limpiarFiltros() {
+    setState(() {
+      _pacienteSeleccionadoFiltro = null;
+      _estadoSeleccionadoFiltro = null;
+      _fechaFiltro = null;
+    });
+  }
+
+  void _seleccionarPacienteFiltro(String? paciente) {
+    setState(() {
+      _pacienteSeleccionadoFiltro = paciente;
+    });
+  }
+
+  void _limpiarPacienteSeleccionado() {
+    setState(() {
+      _pacienteSeleccionadoFiltro = null;
+    });
+  }
+
+  void _seleccionarEstadoFiltro(RegistroClinicoSemaforo? estado) {
+    setState(() {
+      _estadoSeleccionadoFiltro = estado;
+    });
+  }
+
+  void _abrirDetalleRegistro(Map<String, String> registro) {
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => DetalleRegistroClinico(registro: registro),
+      ),
+    );
+  }
+
+  String get _tituloPantalla {
+    final DateTime? fechaFiltrada = widget.fechaFiltrada;
+
+    if (fechaFiltrada != null) {
+      return 'Registros del ${_formatearFechaTitulo(fechaFiltrada)}';
+    }
+
+    final String? patientName = widget.patientName?.trim();
+
+    if (widget.patientId != null &&
+        patientName != null &&
+        patientName.isNotEmpty) {
+      return 'Registros de $patientName';
+    }
+
+    if (_esRolCuidador) {
+      return 'Registros clínicos vinculados';
+    }
+
+    return 'Mis registros clínicos';
+  }
+
+  bool get _esRolCuidador {
+    final String roleNormalizado = _role?.toLowerCase().trim() ?? '';
+    return roleNormalizado == 'caregiver' || roleNormalizado == 'cuidador';
+  }
+
+  bool get _mostrarPacienteEnTarjetas {
+    return widget.patientId == null;
+  }
+
+  bool get _mostrarFiltroPaciente {
+    return widget.patientId == null;
+  }
+
+  bool get _hayFiltrosActivos {
+    return _pacienteSeleccionadoFiltro != null ||
+        _fechaFiltro != null ||
+        _estadoSeleccionadoFiltro != null;
+  }
+
+  String get _mensajeVacio {
+    if (_hayFiltrosActivos) {
+      return 'No hay registros clínicos con los filtros seleccionados.';
+    }
+
+    if (widget.fechaFiltrada != null) {
+      return 'No hay registros clínicos en este día.';
+    }
+
+    if (widget.patientId != null) {
+      return 'No hay registros para este paciente.';
+    }
+
+    return 'No hay registros clínicos.';
+  }
+
+  String _formatearFechaTitulo(DateTime fecha) {
+    final String dia = fecha.day.toString().padLeft(2, '0');
+    final String mes = fecha.month.toString().padLeft(2, '0');
+    return '$dia-$mes-${fecha.year}';
+  }
+
+  String _formatearFechaFiltro(DateTime fecha) {
+    final String dia = fecha.day.toString().padLeft(2, '0');
+    final String mes = fecha.month.toString().padLeft(2, '0');
+    return '$dia-$mes-${fecha.year}';
   }
 
   @override
@@ -271,10 +380,11 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
         backgroundColor: _clinicalHeaderBlue,
         foregroundColor: Colors.white,
         iconTheme: const IconThemeData(color: Colors.white),
-        title: const Text(
-          'Mis registros clínicos',
-          style: TextStyle(
-            fontSize: 18,
+        title: Text(
+          _tituloPantalla,
+          overflow: TextOverflow.ellipsis,
+          style: const TextStyle(
+            fontSize: 16,
             fontWeight: FontWeight.w700,
             color: Colors.white,
           ),
@@ -294,10 +404,33 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
             final registrosReales = snapshot.hasError
                 ? <Map<String, String>>[]
                 : (snapshot.data ?? <Map<String, String>>[]);
-            final bool usandoDatosDemo = registrosReales.isEmpty;
-            final registros = usandoDatosDemo
+            final bool usandoFiltroExterno = widget.registrosFiltrados != null;
+            final bool usandoDatosDemo =
+                !usandoFiltroExterno && registrosReales.isEmpty;
+            final registrosBase = usandoDatosDemo
                 ? _obtenerRegistrosDemo()
                 : registrosReales;
+            final registrosPorPaciente = _filtrarRegistrosPorPaciente(
+              registrosBase,
+            );
+            final pacientesDisponibles = _pacientesDisponibles(
+              registrosPorPaciente,
+            );
+            final registrosPacienteFecha = _aplicarFiltrosPacienteFecha(
+              registrosPorPaciente,
+            );
+            final estadosDisponibles = _estadosDisponibles(
+              registrosPacienteFecha,
+            );
+            final RegistroClinicoSemaforo? estadoSeleccionadoValido =
+                estadosDisponibles.contains(_estadoSeleccionadoFiltro)
+                ? _estadoSeleccionadoFiltro
+                : null;
+            final registros = _aplicarFiltroEstado(
+              registrosPacienteFecha,
+              estadoSeleccionadoValido,
+            );
+            final bool mostrarFiltros = registrosPorPaciente.isNotEmpty;
 
             return Column(
               children: [
@@ -306,21 +439,42 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
                     message:
                         'Mostrando datos demo porque la API no devolvió registros clínicos.',
                   ),
-                Expanded(
-                  child: ListView.separated(
-                    padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
-                    itemCount: registros.length,
-                    separatorBuilder: (context, index) =>
-                        const SizedBox(height: 14),
-                    itemBuilder: (context, index) {
-                      final registro = registros[index];
-                      return _VitalRecordCard(
-                        registro: registro,
-                        showPatient: false,
-                        isDemo: usandoDatosDemo,
-                      );
-                    },
+                if (mostrarFiltros)
+                  _RecordFiltersCard(
+                    mostrarBusquedaPaciente: _mostrarFiltroPaciente,
+                    pacientesDisponibles: pacientesDisponibles,
+                    pacienteSeleccionado: _pacienteSeleccionadoFiltro,
+                    estadosDisponibles: estadosDisponibles,
+                    estadoSeleccionado: estadoSeleccionadoValido,
+                    fechaFiltro: _fechaFiltro,
+                    fechaTexto: _fechaFiltro == null
+                        ? null
+                        : _formatearFechaFiltro(_fechaFiltro!),
+                    hayFiltrosActivos: _hayFiltrosActivos,
+                    onPacienteSeleccionado: _seleccionarPacienteFiltro,
+                    onLimpiarPacienteSeleccionado: _limpiarPacienteSeleccionado,
+                    onEstadoSeleccionado: _seleccionarEstadoFiltro,
+                    onSeleccionarFecha: _seleccionarFecha,
+                    onLimpiarFiltros: _limpiarFiltros,
                   ),
+                Expanded(
+                  child: registros.isEmpty
+                      ? _EmptyRecordsState(message: _mensajeVacio)
+                      : ListView.separated(
+                          padding: const EdgeInsets.fromLTRB(16, 16, 16, 32),
+                          itemCount: registros.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 12),
+                          itemBuilder: (context, index) {
+                            final registro = registros[index];
+                            return _VitalRecordCard(
+                              registro: registro,
+                              showPatient: _mostrarPacienteEnTarjetas,
+                              isDemo: usandoDatosDemo,
+                              onTap: () => _abrirDetalleRegistro(registro),
+                            );
+                          },
+                        ),
                 ),
               ],
             );
@@ -371,18 +525,13 @@ class _DemoNotice extends StatelessWidget {
   Widget build(BuildContext context) {
     return Padding(
       padding: const EdgeInsets.fromLTRB(
-        AppTheme.spacingLg,
-        AppTheme.spacingLg,
-        AppTheme.spacingLg,
+        AppTheme.spacingMd,
+        AppTheme.spacingMd,
+        AppTheme.spacingMd,
         0,
       ),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(20),
-          border: Border.all(color: _clinicalBorder),
-        ),
+      child: EcronoCard(
+        padding: const EdgeInsets.all(AppTheme.spacingMd),
         child: Row(
           crossAxisAlignment: CrossAxisAlignment.start,
           children: [
@@ -392,7 +541,7 @@ class _DemoNotice extends StatelessWidget {
               child: Text(
                 message,
                 style: const TextStyle(
-                  fontSize: 14,
+                  fontSize: 12,
                   height: 1.35,
                   color: _clinicalTextPrimary,
                 ),
@@ -405,63 +554,329 @@ class _DemoNotice extends StatelessWidget {
   }
 }
 
-class _ClinicalMetricRow extends StatelessWidget {
-  const _ClinicalMetricRow({
-    required this.icon,
-    required this.label,
-    required this.value,
-    required this.iconColor,
-    required this.iconBackground,
+class _RecordFiltersCard extends StatelessWidget {
+  const _RecordFiltersCard({
+    required this.mostrarBusquedaPaciente,
+    required this.pacientesDisponibles,
+    required this.pacienteSeleccionado,
+    required this.estadosDisponibles,
+    required this.estadoSeleccionado,
+    required this.fechaFiltro,
+    required this.fechaTexto,
+    required this.hayFiltrosActivos,
+    required this.onPacienteSeleccionado,
+    required this.onLimpiarPacienteSeleccionado,
+    required this.onEstadoSeleccionado,
+    required this.onSeleccionarFecha,
+    required this.onLimpiarFiltros,
   });
 
-  final IconData icon;
-  final String label;
-  final String value;
-  final Color iconColor;
-  final Color iconBackground;
+  final bool mostrarBusquedaPaciente;
+  final List<String> pacientesDisponibles;
+  final String? pacienteSeleccionado;
+  final List<RegistroClinicoSemaforo> estadosDisponibles;
+  final RegistroClinicoSemaforo? estadoSeleccionado;
+  final DateTime? fechaFiltro;
+  final String? fechaTexto;
+  final bool hayFiltrosActivos;
+  final ValueChanged<String?> onPacienteSeleccionado;
+  final VoidCallback onLimpiarPacienteSeleccionado;
+  final ValueChanged<RegistroClinicoSemaforo?> onEstadoSeleccionado;
+  final VoidCallback onSeleccionarFecha;
+  final VoidCallback onLimpiarFiltros;
 
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        Container(
-          width: 34,
-          height: 34,
-          decoration: BoxDecoration(
-            color: iconBackground,
-            borderRadius: BorderRadius.circular(17),
-          ),
-          child: Icon(icon, size: 18, color: iconColor),
-        ),
-        const SizedBox(width: 12),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                label,
+    final String textoFecha = fechaFiltro == null
+        ? 'Filtrar por fecha'
+        : 'Fecha: ${fechaTexto ?? ''}';
+    final String? pacienteSeleccionadoValido =
+        pacienteSeleccionado != null &&
+            pacientesDisponibles.contains(pacienteSeleccionado)
+        ? pacienteSeleccionado
+        : null;
+
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(
+        AppTheme.spacingMd,
+        AppTheme.spacingMd,
+        AppTheme.spacingMd,
+        0,
+      ),
+      child: EcronoCard(
+        padding: const EdgeInsets.all(12),
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (mostrarBusquedaPaciente && pacientesDisponibles.isNotEmpty) ...[
+              DropdownButtonFormField<String>(
+                key: ValueKey(pacienteSeleccionadoValido),
+                initialValue: pacienteSeleccionadoValido,
+                isExpanded: true,
+                items: pacientesDisponibles.map((paciente) {
+                  return DropdownMenuItem<String>(
+                    value: paciente,
+                    child: Text(paciente, overflow: TextOverflow.ellipsis),
+                  );
+                }).toList(),
+                onChanged: onPacienteSeleccionado,
                 style: const TextStyle(
                   fontSize: 14,
-                  height: 1.25,
-                  fontWeight: FontWeight.w500,
-                  color: _clinicalTextSecondary,
+                  color: _clinicalTextPrimary,
+                ),
+                decoration: InputDecoration(
+                  labelText: 'Seleccionar paciente',
+                  prefixIcon: const Icon(
+                    Icons.person_search,
+                    color: _clinicalTextSecondary,
+                    size: 18,
+                  ),
+                  prefixIconConstraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 36,
+                  ),
+                  suffixIcon: pacienteSeleccionadoValido == null
+                      ? null
+                      : IconButton(
+                          tooltip: 'Limpiar selección',
+                          icon: const Icon(Icons.close, size: 18),
+                          onPressed: onLimpiarPacienteSeleccionado,
+                        ),
+                  suffixIconConstraints: const BoxConstraints(
+                    minWidth: 36,
+                    minHeight: 36,
+                  ),
+                  isDense: true,
+                  contentPadding: const EdgeInsets.symmetric(
+                    horizontal: 10,
+                    vertical: 8,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+                    borderSide: const BorderSide(color: _clinicalBorder),
+                  ),
+                  enabledBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+                    borderSide: const BorderSide(color: _clinicalBorder),
+                  ),
+                  focusedBorder: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+                    borderSide: const BorderSide(
+                      color: _clinicalHeaderBlue,
+                      width: 1.5,
+                    ),
+                  ),
                 ),
               ),
-              const SizedBox(height: 2),
+              const SizedBox(height: 10),
+            ],
+            LayoutBuilder(
+              builder: (context, constraints) {
+                final bool usarWrap = constraints.maxWidth < 360;
+                final Widget botonFecha = _CompactFilterButton(
+                  text: textoFecha,
+                  icon: Icons.calendar_today,
+                  onPressed: onSeleccionarFecha,
+                );
+                final Widget selectorEstado = _EstadoFilterDropdown(
+                  estadosDisponibles: estadosDisponibles,
+                  estadoSeleccionado: estadoSeleccionado,
+                  onChanged: onEstadoSeleccionado,
+                );
+                final Widget botonLimpiar = _CompactFilterButton(
+                  text: 'Limpiar filtros',
+                  icon: Icons.filter_alt_off,
+                  onPressed: hayFiltrosActivos ? onLimpiarFiltros : null,
+                );
+
+                if (usarWrap) {
+                  final double anchoDoble = (constraints.maxWidth - 8) / 2;
+                  return Wrap(
+                    spacing: 8,
+                    runSpacing: 8,
+                    children: [
+                      SizedBox(width: anchoDoble, child: botonFecha),
+                      SizedBox(width: anchoDoble, child: selectorEstado),
+                      SizedBox(
+                        width: constraints.maxWidth,
+                        child: botonLimpiar,
+                      ),
+                    ],
+                  );
+                }
+
+                return Row(
+                  children: [
+                    Expanded(child: botonFecha),
+                    const SizedBox(width: 8),
+                    Expanded(child: selectorEstado),
+                    const SizedBox(width: 8),
+                    Expanded(child: botonLimpiar),
+                  ],
+                );
+              },
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _EstadoFilterDropdown extends StatelessWidget {
+  const _EstadoFilterDropdown({
+    required this.estadosDisponibles,
+    required this.estadoSeleccionado,
+    required this.onChanged,
+  });
+
+  final List<RegistroClinicoSemaforo> estadosDisponibles;
+  final RegistroClinicoSemaforo? estadoSeleccionado;
+  final ValueChanged<RegistroClinicoSemaforo?> onChanged;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: DropdownButtonFormField<RegistroClinicoSemaforo?>(
+        initialValue: estadoSeleccionado,
+        isExpanded: true,
+        icon: const Icon(Icons.keyboard_arrow_down, size: 18),
+        items: [
+          const DropdownMenuItem<RegistroClinicoSemaforo?>(
+            value: null,
+            child: Text('Estado', overflow: TextOverflow.ellipsis),
+          ),
+          ...estadosDisponibles.map((estado) {
+            return DropdownMenuItem<RegistroClinicoSemaforo?>(
+              value: estado,
+              child: Text(
+                _etiquetaEstado(estado),
+                overflow: TextOverflow.ellipsis,
+              ),
+            );
+          }),
+        ],
+        onChanged: estadosDisponibles.isEmpty ? null : onChanged,
+        style: const TextStyle(fontSize: 13, color: _clinicalTextPrimary),
+        decoration: InputDecoration(
+          prefixIcon: const Icon(
+            Icons.traffic,
+            color: _clinicalTextSecondary,
+            size: 17,
+          ),
+          prefixIconConstraints: const BoxConstraints(
+            minWidth: 34,
+            minHeight: 34,
+          ),
+          isDense: true,
+          contentPadding: const EdgeInsets.symmetric(
+            horizontal: 8,
+            vertical: 8,
+          ),
+          border: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+            borderSide: const BorderSide(color: _clinicalBorder),
+          ),
+          enabledBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+            borderSide: const BorderSide(color: _clinicalBorder),
+          ),
+          focusedBorder: OutlineInputBorder(
+            borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+            borderSide: const BorderSide(
+              color: _clinicalHeaderBlue,
+              width: 1.5,
+            ),
+          ),
+        ),
+      ),
+    );
+  }
+
+  static String _etiquetaEstado(RegistroClinicoSemaforo estado) {
+    switch (estado) {
+      case RegistroClinicoSemaforo.estable:
+        return 'Estable';
+      case RegistroClinicoSemaforo.atencion:
+        return 'Atención';
+      case RegistroClinicoSemaforo.alerta:
+        return 'Alerta';
+      case RegistroClinicoSemaforo.sinDato:
+        return 'Sin datos';
+    }
+  }
+}
+
+class _CompactFilterButton extends StatelessWidget {
+  const _CompactFilterButton({
+    required this.text,
+    required this.icon,
+    required this.onPressed,
+  });
+
+  final String text;
+  final IconData icon;
+  final VoidCallback? onPressed;
+
+  @override
+  Widget build(BuildContext context) {
+    return SizedBox(
+      height: 42,
+      child: OutlinedButton.icon(
+        onPressed: onPressed,
+        icon: Icon(icon, size: 17),
+        label: FittedBox(fit: BoxFit.scaleDown, child: Text(text)),
+        style: OutlinedButton.styleFrom(
+          foregroundColor: _clinicalHeaderBlue,
+          disabledForegroundColor: _clinicalTextSecondary,
+          padding: const EdgeInsets.symmetric(horizontal: 10),
+          side: const BorderSide(color: _clinicalBorder),
+          shape: RoundedRectangleBorder(
+            borderRadius: BorderRadius.circular(AppTheme.radiusMd),
+          ),
+          textStyle: const TextStyle(fontSize: 13, fontWeight: FontWeight.w700),
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyRecordsState extends StatelessWidget {
+  const _EmptyRecordsState({required this.message});
+
+  final String message;
+
+  @override
+  Widget build(BuildContext context) {
+    return Center(
+      child: Padding(
+        padding: const EdgeInsets.all(AppTheme.spacingMd),
+        child: EcronoCard(
+          padding: const EdgeInsets.all(14),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.event_busy,
+                color: _clinicalHeaderBlue,
+                size: 38,
+              ),
+              const SizedBox(height: AppTheme.spacingSm),
               Text(
-                value,
+                message,
+                textAlign: TextAlign.center,
                 style: const TextStyle(
-                  fontSize: 14,
-                  height: 1.3,
-                  fontWeight: FontWeight.w700,
                   color: _clinicalTextPrimary,
+                  fontSize: 16,
+                  fontWeight: FontWeight.w700,
+                  height: 1.3,
                 ),
               ),
             ],
           ),
         ),
-      ],
+      ),
     );
   }
 }
@@ -469,165 +884,320 @@ class _ClinicalMetricRow extends StatelessWidget {
 class _VitalRecordCard extends StatelessWidget {
   const _VitalRecordCard({
     required this.registro,
+    required this.onTap,
     this.showPatient = true,
     this.isDemo = false,
   });
 
   final Map<String, String> registro;
+  final VoidCallback onTap;
   final bool showPatient;
   final bool isDemo;
 
   @override
   Widget build(BuildContext context) {
+    final RegistroClinicoEstado estado = RegistroClinicoSemaforoHelper.calcular(
+      registro,
+    );
+    final RegistroClinicoSemaforo estadoPresion =
+        RegistroClinicoSemaforoHelper.evaluarPresionArterial(registro);
+    final RegistroClinicoSemaforo estadoFrecuencia =
+        RegistroClinicoSemaforoHelper.evaluarFrecuenciaCardiaca(registro);
+    final RegistroClinicoSemaforo estadoGlucosa =
+        RegistroClinicoSemaforoHelper.evaluarGlucosa(registro);
     final String frecuenciaTexto =
         registro['frecuencia_cardiaca'] == 'No informado'
         ? 'No informado'
         : '${registro['frecuencia_cardiaca']} bpm';
     final String presionTexto =
         '${registro['presion_sistolica']}/${registro['presion_diastolica']} mmHg';
-    final bool mostrarGlucosa =
-        registro['glucosa'] != null && registro['glucosa'] != 'No informado';
+    final String glucosaTexto =
+        registro['glucosa'] == null || registro['glucosa'] == 'No informado'
+        ? 'No informado'
+        : '${registro['glucosa']} mg/dL';
+    final String patientName = _nombrePaciente();
 
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _clinicalBorder),
-        boxShadow: [
-          BoxShadow(
-            color: Colors.black.withValues(alpha: 0.04),
-            blurRadius: 8,
-            offset: const Offset(0, 3),
-          ),
-        ],
-      ),
-      child: Column(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Row(
+    return Semantics(
+      button: true,
+      label: 'Ver detalle del registro clínico',
+      child: GestureDetector(
+        onTap: onTap,
+        child: EcronoCard(
+          padding: const EdgeInsets.all(12),
+          child: Column(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Container(
-                width: 44,
-                height: 44,
-                decoration: BoxDecoration(
-                  color: _clinicalSoftBlue,
-                  borderRadius: BorderRadius.circular(14),
-                ),
-                child: const Icon(
-                  Icons.calendar_month,
-                  color: _clinicalHeaderBlue,
-                  size: 22,
-                ),
-              ),
-              const SizedBox(width: 12),
-              Expanded(
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
-                  children: [
-                    if (showPatient)
-                      Text(
-                        registro['patient'] ?? 'Paciente',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          fontWeight: FontWeight.w700,
-                          color: _clinicalTextPrimary,
-                        ),
-                      ),
-                    Text(
-                      registro['fecha'] ?? 'No disponible',
-                      style: const TextStyle(
-                        fontSize: 16,
-                        height: 1.3,
-                        fontWeight: FontWeight.w700,
-                        color: _clinicalTextPrimary,
-                      ),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Container(
+                    width: 32,
+                    height: 32,
+                    decoration: BoxDecoration(
+                      color: _clinicalSoftBlue,
+                      borderRadius: BorderRadius.circular(10),
                     ),
-                  ],
-                ),
-              ),
-              if (isDemo)
-                const EcronoStatusBadge(
-                  text: 'Demo',
-                  status: EcronoStatusType.info,
-                ),
-            ],
-          ),
-          const SizedBox(height: 16),
-          _ClinicalMetricRow(
-            icon: Icons.favorite,
-            iconColor: _clinicalAlert,
-            iconBackground: const Color(0xFFFEF2F2),
-            label: 'Presión arterial',
-            value: presionTexto,
-          ),
-          const SizedBox(height: 12),
-          _ClinicalMetricRow(
-            icon: Icons.monitor_heart,
-            iconColor: AppTheme.actionBlue,
-            iconBackground: _clinicalSoftBlue,
-            label: 'Frecuencia cardíaca',
-            value: frecuenciaTexto,
-          ),
-          if (mostrarGlucosa) ...[
-            const SizedBox(height: 12),
-            _ClinicalMetricRow(
-              icon: Icons.bloodtype,
-              iconColor: _clinicalWarning,
-              iconBackground: const Color(0xFFFFFBEB),
-              label: 'Glucosa',
-              value: '${registro['glucosa']} mg/dL',
-            ),
-          ],
-          const SizedBox(height: 16),
-          const Divider(height: 1, color: _clinicalBorder),
-          const SizedBox(height: 14),
-          const Text(
-            'Observaciones',
-            style: TextStyle(
-              fontSize: 14,
-              height: 1.3,
-              fontWeight: FontWeight.w600,
-              color: _clinicalTextPrimary,
-            ),
-          ),
-          const SizedBox(height: 6),
-          Text(
-            registro['observaciones'] ?? 'Sin observaciones',
-            style: const TextStyle(
-              fontSize: 14,
-              height: 1.4,
-              fontWeight: FontWeight.w400,
-              color: _clinicalTextTertiary,
-            ),
-          ),
-          if (registro['registrado_por'] != null) ...[
-            const SizedBox(height: 12),
-            Row(
-              children: [
-                const Icon(
-                  Icons.person_outline,
-                  size: 16,
-                  color: _clinicalTextSecondary,
-                ),
-                const SizedBox(width: 6),
-                Expanded(
-                  child: Text(
-                    'Registrado por: ${registro['registrado_por']}',
-                    style: const TextStyle(
-                      fontSize: 12,
-                      height: 1.3,
-                      fontWeight: FontWeight.w400,
-                      color: _clinicalTextSecondary,
+                    child: const Icon(
+                      Icons.calendar_month,
+                      color: _clinicalHeaderBlue,
+                      size: 17,
                     ),
                   ),
-                ),
-              ],
+                  const SizedBox(width: 10),
+                  Expanded(
+                    child: Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        if (showPatient) ...[
+                          Text.rich(
+                            TextSpan(
+                              children: [
+                                const TextSpan(
+                                  text: 'Paciente: ',
+                                  style: TextStyle(fontWeight: FontWeight.w700),
+                                ),
+                                TextSpan(text: patientName),
+                              ],
+                            ),
+                            maxLines: 1,
+                            overflow: TextOverflow.ellipsis,
+                            style: const TextStyle(
+                              fontSize: 13,
+                              height: 1.25,
+                              fontWeight: FontWeight.w500,
+                              color: _clinicalTextPrimary,
+                            ),
+                          ),
+                          const SizedBox(height: 2),
+                        ],
+                        Text(
+                          registro['fecha'] ?? 'No disponible',
+                          style: const TextStyle(
+                            fontSize: 14,
+                            height: 1.25,
+                            fontWeight: FontWeight.w700,
+                            color: _clinicalTextPrimary,
+                          ),
+                        ),
+                      ],
+                    ),
+                  ),
+                  const SizedBox(width: 8),
+                  EcronoStatusBadge(text: estado.texto, status: estado.status),
+                ],
+              ),
+              const SizedBox(height: 8),
+              Row(
+                children: [
+                  Expanded(
+                    child: Wrap(
+                      spacing: 8,
+                      runSpacing: 8,
+                      children: [
+                        _SummaryMetricChip(
+                          icon: Icons.favorite,
+                          label: 'PA',
+                          value: presionTexto,
+                          semaforo: estadoPresion,
+                        ),
+                        _SummaryMetricChip(
+                          icon: Icons.monitor_heart,
+                          label: 'FC',
+                          value: frecuenciaTexto,
+                          semaforo: estadoFrecuencia,
+                        ),
+                      ],
+                    ),
+                  ),
+                ],
+              ),
+              const SizedBox(height: 6),
+              Row(
+                crossAxisAlignment: CrossAxisAlignment.center,
+                children: [
+                  _SummaryMetricChip(
+                    icon: Icons.bloodtype,
+                    label: 'Glucosa',
+                    value: glucosaTexto,
+                    semaforo: estadoGlucosa,
+                  ),
+                  const Spacer(),
+                  if (isDemo) ...[
+                    const EcronoStatusBadge(
+                      text: 'Demo',
+                      status: EcronoStatusType.info,
+                    ),
+                    const SizedBox(width: 8),
+                  ],
+                  _SummaryDetailAction(onTap: onTap),
+                ],
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
+  String _nombrePaciente() {
+    final String patient = registro['patient']?.trim() ?? '';
+
+    if (patient.isEmpty) {
+      return 'No disponible';
+    }
+
+    final String sinPrefijo = patient.replaceFirst(
+      RegExp(r'^Paciente:\s*', caseSensitive: false),
+      '',
+    );
+    final String limpio = sinPrefijo.trim();
+    return limpio.isEmpty ? 'No disponible' : limpio;
+  }
+}
+
+class _SummaryDetailAction extends StatelessWidget {
+  const _SummaryDetailAction({required this.onTap});
+
+  final VoidCallback onTap;
+
+  @override
+  Widget build(BuildContext context) {
+    return InkWell(
+      onTap: onTap,
+      borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+      child: Container(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        decoration: BoxDecoration(
+          color: Colors.white,
+          border: Border.all(color: _clinicalBorder),
+          borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+        ),
+        child: const Row(
+          mainAxisSize: MainAxisSize.min,
+          children: [
+            Icon(
+              Icons.visibility_outlined,
+              size: 14,
+              color: _clinicalHeaderBlue,
+            ),
+            SizedBox(width: 4),
+            Text(
+              'Ver detalle',
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.2,
+                fontWeight: FontWeight.w700,
+                color: _clinicalHeaderBlue,
+              ),
             ),
           ],
+        ),
+      ),
+    );
+  }
+}
+
+class _SummaryMetricChip extends StatelessWidget {
+  const _SummaryMetricChip({
+    required this.icon,
+    required this.label,
+    required this.value,
+    required this.semaforo,
+  });
+
+  final IconData icon;
+  final String label;
+  final String value;
+  final RegistroClinicoSemaforo semaforo;
+
+  @override
+  Widget build(BuildContext context) {
+    final _MetricChipStyle style = _styleForSemaforo(semaforo);
+
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+      decoration: BoxDecoration(
+        color: style.background,
+        borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+        border: Border.all(color: style.border),
+      ),
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [
+          Icon(icon, size: 14, color: style.foreground),
+          const SizedBox(width: 4),
+          Text(
+            '$label: ',
+            style: TextStyle(
+              fontSize: 12,
+              height: 1.2,
+              fontWeight: FontWeight.w600,
+              color: style.foreground,
+            ),
+          ),
+          ConstrainedBox(
+            constraints: const BoxConstraints(maxWidth: 112),
+            child: Text(
+              value,
+              maxLines: 1,
+              overflow: TextOverflow.ellipsis,
+              style: TextStyle(
+                fontSize: 12,
+                height: 1.2,
+                fontWeight: FontWeight.w700,
+                color: style.text,
+              ),
+            ),
+          ),
         ],
       ),
     );
   }
+
+  _MetricChipStyle _styleForSemaforo(RegistroClinicoSemaforo semaforo) {
+    switch (semaforo) {
+      case RegistroClinicoSemaforo.estable:
+        return _MetricChipStyle(
+          foreground: AppTheme.successGreen,
+          text: _clinicalTextPrimary,
+          background: AppTheme.successGreen.withValues(alpha: 0.1),
+          border: AppTheme.successGreen.withValues(alpha: 0.26),
+        );
+      case RegistroClinicoSemaforo.atencion:
+        return _MetricChipStyle(
+          foreground: AppTheme.pendingOrange,
+          text: _clinicalTextPrimary,
+          background: AppTheme.pendingOrange.withValues(alpha: 0.12),
+          border: AppTheme.pendingOrange.withValues(alpha: 0.28),
+        );
+      case RegistroClinicoSemaforo.alerta:
+        return _MetricChipStyle(
+          foreground: AppTheme.alertRed,
+          text: _clinicalTextPrimary,
+          background: AppTheme.alertRed.withValues(alpha: 0.1),
+          border: AppTheme.alertRed.withValues(alpha: 0.28),
+        );
+      case RegistroClinicoSemaforo.sinDato:
+        return const _MetricChipStyle(
+          foreground: _clinicalTextSecondary,
+          text: _clinicalTextPrimary,
+          background: Color(0xFFF9FAFB),
+          border: _clinicalBorder,
+        );
+    }
+  }
+}
+
+class _MetricChipStyle {
+  const _MetricChipStyle({
+    required this.foreground,
+    required this.text,
+    required this.background,
+    required this.border,
+  });
+
+  final Color foreground;
+  final Color text;
+  final Color background;
+  final Color border;
 }

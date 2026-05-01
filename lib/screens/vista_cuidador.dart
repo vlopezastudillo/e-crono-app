@@ -1,25 +1,37 @@
-import 'dart:convert';
-
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../app_navigation.dart';
-import '../api_constants.dart';
+import '../services/pacientes_cuidador_service.dart';
+import '../services/registros_clinicos_service.dart';
+import '../services/seguimiento_clinico_service.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
 import '../widgets/ecrono_ui.dart';
+import 'pantalla_agregar_recordatorio_medicamento.dart';
 import 'pantalla_inicial.dart';
 import 'pantalla_pacientes_a_cargo.dart';
-import 'pantalla_registros_clinicos.dart';
 
 const Color _caregiverBackground = Color(0xFFF3F4F6);
 const Color _caregiverHeaderBlue = Color(0xFF0A2B4E);
-const Color _caregiverBorder = Color(0xFFE5E7EB);
-const Color _caregiverTextPrimary = Color(0xFF111827);
 const Color _caregiverTextSecondary = Color(0xFF6B7280);
-const Color _caregiverSuccess = Color(0xFF10B981);
-const Color _caregiverWarning = Color(0xFFF59E0B);
+const TextStyle _caregiverSectionTitleStyle = TextStyle(
+  fontSize: 17,
+  fontWeight: FontWeight.w700,
+  color: Color(0xFF1F2937),
+);
+const TextStyle _caregiverPatientNameStyle = TextStyle(
+  fontSize: 16,
+  fontWeight: FontWeight.w700,
+  color: Color(0xFF1F2937),
+  height: 1.18,
+);
+const TextStyle _caregiverDescriptionStyle = TextStyle(
+  fontSize: 12,
+  fontWeight: FontWeight.normal,
+  height: 1.25,
+  color: Color(0xFF6B7280),
+);
 
 // Pantalla principal del flujo cuidador.
 class VistaCuidador extends StatefulWidget {
@@ -30,66 +42,57 @@ class VistaCuidador extends StatefulWidget {
 }
 
 class _VistaCuidadorState extends State<VistaCuidador> {
-  late Future<List<_PacienteCuidador>> _pacientesFuture;
+  final PacientesCuidadorService _pacientesService =
+      const PacientesCuidadorService();
+  final RegistrosClinicosService _registrosService =
+      const RegistrosClinicosService();
+  final SeguimientoClinicoService _seguimientoService =
+      const SeguimientoClinicoService();
+  late Future<_CaregiverDashboardData> _dashboardFuture;
 
   @override
   void initState() {
     super.initState();
     // Carga pacientes reales asociados al cuidador al abrir la pantalla.
-    _pacientesFuture = _cargarPacientes();
+    _dashboardFuture = _cargarDashboardCuidador();
   }
 
-  Future<List<_PacienteCuidador>> _cargarPacientes() async {
-    try {
-      // Reutiliza el helper para enviar Authorization: Token <token>.
-      final Map<String, String> headers = await SessionHelper.getAuthHeaders();
+  Future<_CaregiverDashboardData> _cargarDashboardCuidador() async {
+    final results = await Future.wait([
+      _pacientesService.cargarPacientesACargo(),
+      _registrosService.cargarMisRegistros(),
+    ]);
+    final List<Map<String, String>> pacientes = results[0];
+    final List<Map<String, String>> registros = results[1];
+    final bool hayCruce = _seguimientoService.existeCrucePacienteRegistro(
+      pacientes,
+      registros,
+    );
+    final SeguimientoClinicoEstado? estadoFallback = _seguimientoService
+        .calcularEstado(registros);
 
-      if (!headers.containsKey('Authorization')) {
-        return [];
-      }
+    return _CaregiverDashboardData(
+      pacientes: pacientes.map((paciente) {
+        final List<Map<String, String>> registrosPaciente = _seguimientoService
+            .registrosDelPaciente(paciente, registros);
+        final SeguimientoClinicoEstado? estado = hayCruce
+            ? _seguimientoService.calcularEstado(registrosPaciente)
+            : estadoFallback;
 
-      final response = await http.get(
-        Uri.parse(apiCaregiverPatientsUrl),
-        headers: headers,
-      );
-
-      if (response.statusCode != 200) {
-        return [];
-      }
-
-      final dynamic data = jsonDecode(response.body);
-      final List<dynamic> items;
-
-      if (data is List) {
-        items = data;
-      } else if (data is Map<String, dynamic> && data['results'] is List) {
-        items = data['results'] as List<dynamic>;
-      } else {
-        return [];
-      }
-
-      return items.whereType<Map<String, dynamic>>().map((item) {
         return _PacienteCuidador(
-          nombre: _limpiarNombrePaciente(item['patient']),
-          parentesco: _leerTexto(item['parentesco']) ?? 'No disponible',
-          esPrincipal:
-              item['es_principal'] == true || item['is_primary'] == true,
+          patientId: _leerPatientId(paciente['patient_id']),
+          nombre: paciente['patient'] ?? 'No disponible',
+          parentesco: paciente['parentesco'] ?? 'No disponible',
+          esPrincipal: paciente['es_principal'] == 'Sí',
+          estadoClinico: estado,
+          usandoFallbackGlobal: !hayCruce && estadoFallback != null,
         );
-      }).toList();
-    } catch (_) {
-      // Si falla la API, se mantiene la vista demostrativa actual.
-      return [];
-    }
+      }).toList(),
+    );
   }
 
-  String _limpiarNombrePaciente(dynamic valor) {
-    final String texto = _leerTexto(valor) ?? 'No disponible';
-    return texto.replaceFirst(RegExp(r'^Paciente:\s*'), '');
-  }
-
-  String? _leerTexto(dynamic valor) {
-    final String texto = valor?.toString().trim() ?? '';
-    return texto.isEmpty ? null : texto;
+  int? _leerPatientId(String? valor) {
+    return int.tryParse(valor ?? '');
   }
 
   Future<void> _cerrarSesion(BuildContext context) async {
@@ -112,13 +115,13 @@ class _VistaCuidadorState extends State<VistaCuidador> {
     return _PantallaDemoRol(
       titulo: 'Seguimiento del cuidador',
       mensajeBienvenida:
-          'Revisa a las personas a tu cargo y apoya el seguimiento de sus controles de salud.',
+          'Revisa a las personas a tu cargo y apoya el seguimiento de sus controles.',
       mensajeDemo:
           'Desde aquí puedes consultar pacientes vinculados, revisar controles recientes y acompañar la continuidad del cuidado.',
       icono: Icons.people,
       textoBotonPrincipal: 'Ver pacientes a cargo',
-      textoBotonSecundario: 'Ver registros clínicos',
-      pacientesFuture: _pacientesFuture,
+      textoBotonSecundario: 'Registros clínicos',
+      dashboardFuture: _dashboardFuture,
       onCerrarSesion: () {
         _cerrarSesion(context);
       },
@@ -132,28 +135,34 @@ class _VistaCuidadorState extends State<VistaCuidador> {
         );
       },
       onBotonSecundario: () {
-        // Navega a la lista simple de registros clinicos.
-        Navigator.push(
-          context,
-          MaterialPageRoute(
-            builder: (context) => const PantallaRegistrosClinicos(),
-          ),
-        );
+        AppNavigation.abrirMisRegistros(context);
       },
     );
   }
 }
 
+class _CaregiverDashboardData {
+  const _CaregiverDashboardData({required this.pacientes});
+
+  final List<_PacienteCuidador> pacientes;
+}
+
 class _PacienteCuidador {
   const _PacienteCuidador({
+    required this.patientId,
     required this.nombre,
     required this.parentesco,
     required this.esPrincipal,
+    required this.estadoClinico,
+    required this.usandoFallbackGlobal,
   });
 
+  final int? patientId;
   final String nombre;
   final String parentesco;
   final bool esPrincipal;
+  final SeguimientoClinicoEstado? estadoClinico;
+  final bool usandoFallbackGlobal;
 }
 
 // Widget reutilizable para una demo simple por rol.
@@ -165,7 +174,7 @@ class _PantallaDemoRol extends StatelessWidget {
     required this.icono,
     required this.textoBotonPrincipal,
     required this.textoBotonSecundario,
-    this.pacientesFuture,
+    this.dashboardFuture,
     this.onCerrarSesion,
     this.onBotonPrincipal,
     this.onBotonSecundario,
@@ -177,7 +186,7 @@ class _PantallaDemoRol extends StatelessWidget {
   final IconData icono;
   final String textoBotonPrincipal;
   final String textoBotonSecundario;
-  final Future<List<_PacienteCuidador>>? pacientesFuture;
+  final Future<_CaregiverDashboardData>? dashboardFuture;
   final VoidCallback? onCerrarSesion;
   final VoidCallback? onBotonPrincipal;
   final VoidCallback? onBotonSecundario;
@@ -196,7 +205,10 @@ class _PantallaDemoRol extends StatelessWidget {
       appBar: AppBar(
         backgroundColor: _caregiverHeaderBlue,
         foregroundColor: Colors.white,
-        title: Text(titulo),
+        title: Text(
+          titulo,
+          style: const TextStyle(fontSize: 18, fontWeight: FontWeight.w700),
+        ),
         centerTitle: true,
         actions: [
           IconButton(
@@ -215,75 +227,45 @@ class _PantallaDemoRol extends StatelessWidget {
                 color: _caregiverHeaderBlue,
                 padding: const EdgeInsets.fromLTRB(
                   AppTheme.spacingMd,
-                  AppTheme.spacingLg,
+                  10,
                   AppTheme.spacingMd,
-                  AppTheme.spacingXl,
+                  12,
                 ),
-                child: Column(
-                  crossAxisAlignment: CrossAxisAlignment.start,
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.center,
                   children: [
-                    Icon(icono, size: 56, color: Colors.white),
-                    const SizedBox(height: AppTheme.spacingMd),
-                    Text(
-                      titulo,
-                      style: const TextStyle(
-                        fontSize: 28,
-                        fontWeight: FontWeight.w700,
-                        color: Colors.white,
-                      ),
-                    ),
-                    const SizedBox(height: AppTheme.spacingSm),
-                    Text(
-                      mensajeBienvenida,
-                      style: const TextStyle(
-                        fontSize: 17,
-                        height: 1.35,
-                        color: Colors.white,
+                    Icon(icono, size: 28, color: Colors.white),
+                    const SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        mensajeBienvenida,
+                        style: const TextStyle(
+                          fontSize: 13,
+                          height: 1.25,
+                          color: Colors.white,
+                        ),
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
                       ),
                     ),
                   ],
                 ),
               ),
               Padding(
-                padding: const EdgeInsets.all(AppTheme.spacingMd),
+                padding: const EdgeInsets.fromLTRB(
+                  AppTheme.spacingMd,
+                  8,
+                  AppTheme.spacingMd,
+                  AppTheme.spacingMd,
+                ),
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _CaregiverCard(
-                      padding: const EdgeInsets.all(AppTheme.spacingLg),
-                      child: _CaregiverPatientsSummary(
-                        pacientesFuture: pacientesFuture,
-                        mensajeDemo: mensajeDemo,
-                      ),
+                    _CaregiverPatientsSummary(
+                      dashboardFuture: dashboardFuture,
+                      mensajeDemo: mensajeDemo,
                     ),
-                    const SizedBox(height: AppTheme.spacingLg),
-                    const _CaregiverSectionTitle(
-                      title: 'Estado del seguimiento',
-                      icon: Icons.health_and_safety,
-                    ),
-                    const SizedBox(height: AppTheme.spacingSm),
-                    const _CaregiverCard(
-                      child: Column(
-                        children: [
-                          _CaregiverStatusItem(
-                            icon: Icons.check_circle,
-                            title: 'Paciente estable',
-                            detail: 'Sin señales de alarma registradas.',
-                            statusText: 'Estable',
-                            statusType: EcronoStatusType.success,
-                          ),
-                          Divider(height: AppTheme.spacingLg),
-                          _CaregiverStatusItem(
-                            icon: Icons.schedule,
-                            title: 'Control próximo',
-                            detail: 'Revisar continuidad de medicamentos.',
-                            statusText: 'Revisión',
-                            statusType: EcronoStatusType.warning,
-                          ),
-                        ],
-                      ),
-                    ),
-                    const SizedBox(height: AppTheme.spacingLg),
+                    const SizedBox(height: AppTheme.spacingMd),
                     const _CaregiverSectionTitle(
                       title: 'Acciones rápidas',
                       icon: Icons.touch_app,
@@ -311,23 +293,6 @@ class _PantallaDemoRol extends StatelessWidget {
                           _mostrarMensaje(context, textoBotonSecundario);
                         }
                       },
-                    ),
-                    const SizedBox(height: AppTheme.spacingSm),
-                    TextButton.icon(
-                      style: TextButton.styleFrom(
-                        foregroundColor: _caregiverHeaderBlue,
-                        minimumSize: const Size.fromHeight(48),
-                        textStyle: const TextStyle(
-                          fontSize: 16,
-                          fontWeight: FontWeight.w700,
-                        ),
-                      ),
-                      onPressed: () {
-                        // Vuelve a la pantalla anterior.
-                        Navigator.pop(context);
-                      },
-                      icon: const Icon(Icons.arrow_back),
-                      label: const Text('Volver'),
                     ),
                   ],
                 ),
@@ -361,68 +326,88 @@ class _CaregiverCard extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    // Mantiene la tarjeta del Design System y suma borde clinico del mockup.
-    return DecoratedBox(
-      decoration: BoxDecoration(
-        borderRadius: BorderRadius.circular(20),
-        border: Border.all(color: _caregiverBorder),
-      ),
-      child: EcronoCard(padding: padding, child: child),
-    );
+    return EcronoCard(padding: padding, child: child);
   }
 }
 
 class _CaregiverPatientsSummary extends StatelessWidget {
   const _CaregiverPatientsSummary({
-    required this.pacientesFuture,
+    required this.dashboardFuture,
     required this.mensajeDemo,
   });
 
-  final Future<List<_PacienteCuidador>>? pacientesFuture;
+  final Future<_CaregiverDashboardData>? dashboardFuture;
   final String mensajeDemo;
 
   @override
   Widget build(BuildContext context) {
-    final Future<List<_PacienteCuidador>>? future = pacientesFuture;
+    final Future<_CaregiverDashboardData>? future = dashboardFuture;
 
     if (future == null) {
-      return _CaregiverDemoSummary(mensajeDemo: mensajeDemo);
+      return _CaregiverCard(
+        padding: const EdgeInsets.all(AppTheme.spacingLg),
+        child: _CaregiverDemoSummary(mensajeDemo: mensajeDemo),
+      );
     }
 
-    return FutureBuilder<List<_PacienteCuidador>>(
+    return FutureBuilder<_CaregiverDashboardData>(
       future: future,
       builder: (context, snapshot) {
-        final List<_PacienteCuidador> pacientes = snapshot.data ?? [];
+        final List<_PacienteCuidador> pacientes =
+            snapshot.data?.pacientes ?? [];
 
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const _CaregiverLoadingSummary();
-        }
-
-        if (pacientes.isEmpty) {
-          return _CaregiverDemoSummary(mensajeDemo: mensajeDemo);
-        }
-
-        return Column(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Text(
-              'Pacientes vinculados',
-              style: TextStyle(
-                fontSize: 20,
-                fontWeight: FontWeight.w700,
-                color: _caregiverTextPrimary,
-              ),
-            ),
-            const SizedBox(height: AppTheme.spacingMd),
-            ...pacientes.expand((paciente) sync* {
-              if (paciente != pacientes.first) {
-                yield const Divider(height: AppTheme.spacingLg);
-              }
-              yield _CaregiverPatientRow(paciente: paciente);
-            }),
-          ],
+        return _CaregiverPatientsContent(
+          pacientes: pacientes,
+          isLoading: snapshot.connectionState != ConnectionState.done,
+          mensajeDemo: mensajeDemo,
         );
       },
+    );
+  }
+}
+
+class _CaregiverPatientsContent extends StatelessWidget {
+  const _CaregiverPatientsContent({
+    required this.pacientes,
+    required this.isLoading,
+    required this.mensajeDemo,
+  });
+
+  final List<_PacienteCuidador> pacientes;
+  final bool isLoading;
+  final String mensajeDemo;
+
+  @override
+  Widget build(BuildContext context) {
+    if (isLoading) {
+      return const _CaregiverCard(
+        padding: EdgeInsets.all(AppTheme.spacingLg),
+        child: _CaregiverLoadingSummary(),
+      );
+    }
+
+    if (pacientes.isEmpty) {
+      return _CaregiverCard(
+        padding: const EdgeInsets.all(AppTheme.spacingLg),
+        child: _CaregiverDemoSummary(mensajeDemo: mensajeDemo),
+      );
+    }
+
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        const _CaregiverSectionTitle(
+          title: 'Pacientes vinculados',
+          icon: Icons.groups,
+        ),
+        const SizedBox(height: AppTheme.spacingSm),
+        ...pacientes.map(
+          (paciente) => Padding(
+            padding: const EdgeInsets.only(bottom: AppTheme.spacingSm),
+            child: _CaregiverPatientCard(paciente: paciente),
+          ),
+        ),
+      ],
     );
   }
 }
@@ -437,20 +422,13 @@ class _CaregiverDemoSummary extends StatelessWidget {
     return Column(
       crossAxisAlignment: CrossAxisAlignment.start,
       children: [
-        const Text(
-          'Vista demostrativa',
-          style: TextStyle(
-            fontSize: 20,
-            fontWeight: FontWeight.w700,
-            color: _caregiverTextPrimary,
-          ),
-        ),
+        const Text('Vista demostrativa', style: _caregiverSectionTitleStyle),
         const SizedBox(height: AppTheme.spacingSm),
         Text(
           mensajeDemo,
           style: const TextStyle(
-            fontSize: 16,
-            height: 1.45,
+            fontSize: 12,
+            height: 1.35,
             color: _caregiverTextSecondary,
           ),
         ),
@@ -480,7 +458,11 @@ class _CaregiverLoadingSummary extends StatelessWidget {
         Expanded(
           child: Text(
             'Cargando pacientes vinculados...',
-            style: TextStyle(fontSize: 16, color: _caregiverTextSecondary),
+            style: TextStyle(
+              fontSize: 13,
+              height: 1.35,
+              color: _caregiverTextSecondary,
+            ),
           ),
         ),
       ],
@@ -488,52 +470,354 @@ class _CaregiverLoadingSummary extends StatelessWidget {
   }
 }
 
-class _CaregiverPatientRow extends StatelessWidget {
-  const _CaregiverPatientRow({required this.paciente});
+class _CaregiverPatientCard extends StatelessWidget {
+  const _CaregiverPatientCard({required this.paciente});
 
   final _PacienteCuidador paciente;
 
+  String _estadoTexto() {
+    final SeguimientoClinicoEstado? estado = paciente.estadoClinico;
+
+    if (estado == null) {
+      return 'Sin registros';
+    }
+
+    switch (estado.nivel) {
+      case SeguimientoClinicoNivel.alDia:
+        return 'Estable';
+      case SeguimientoClinicoNivel.atencion:
+        return 'Revisión';
+      case SeguimientoClinicoNivel.atrasado:
+        return 'Alerta';
+    }
+  }
+
+  EcronoStatusType _estadoTipo() {
+    final SeguimientoClinicoEstado? estado = paciente.estadoClinico;
+
+    if (estado == null) {
+      return EcronoStatusType.info;
+    }
+
+    switch (estado.nivel) {
+      case SeguimientoClinicoNivel.alDia:
+        return EcronoStatusType.success;
+      case SeguimientoClinicoNivel.atencion:
+        return EcronoStatusType.warning;
+      case SeguimientoClinicoNivel.atrasado:
+        return EcronoStatusType.danger;
+    }
+  }
+
+  IconData _estadoIcono() {
+    final SeguimientoClinicoEstado? estado = paciente.estadoClinico;
+
+    if (estado == null) {
+      return Icons.event_busy;
+    }
+
+    switch (estado.nivel) {
+      case SeguimientoClinicoNivel.alDia:
+        return Icons.check_circle;
+      case SeguimientoClinicoNivel.atencion:
+        return Icons.warning_amber;
+      case SeguimientoClinicoNivel.atrasado:
+        return Icons.error;
+    }
+  }
+
+  Color _estadoColor() {
+    final SeguimientoClinicoEstado? estado = paciente.estadoClinico;
+
+    if (estado == null) {
+      return _caregiverHeaderBlue;
+    }
+
+    switch (estado.nivel) {
+      case SeguimientoClinicoNivel.alDia:
+        return AppTheme.successGreen;
+      case SeguimientoClinicoNivel.atencion:
+        return AppTheme.pendingOrange;
+      case SeguimientoClinicoNivel.atrasado:
+        return AppTheme.alertRed;
+    }
+  }
+
+  void _registrarControl(BuildContext context) {
+    final int? patientId = paciente.patientId;
+
+    if (patientId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo identificar el paciente para registrar el control.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    AppNavigation.abrirSalud(
+      context,
+      patientId: patientId,
+      patientName: paciente.nombre,
+    );
+  }
+
+  void _verRegistros(BuildContext context) {
+    final int? patientId = paciente.patientId;
+
+    if (patientId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo identificar el paciente para ver registros.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    AppNavigation.abrirRegistrosPaciente(
+      context,
+      patientId: patientId,
+      patientName: paciente.nombre,
+    );
+  }
+
+  void _agregarRecordatorioMedicamento(BuildContext context) {
+    final int? patientId = paciente.patientId;
+
+    if (patientId == null) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text(
+            'No se pudo identificar el paciente para crear el recordatorio.',
+          ),
+        ),
+      );
+      return;
+    }
+
+    Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PantallaAgregarRecordatorioMedicamento(
+          patientId: patientId,
+          patientName: paciente.nombre,
+        ),
+      ),
+    );
+  }
+
   @override
   Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Icon(Icons.person, color: _caregiverHeaderBlue, size: 30),
-        const SizedBox(width: AppTheme.spacingSm),
-        Expanded(
-          child: Column(
+    final SeguimientoClinicoEstado? estado = paciente.estadoClinico;
+    final String ultimoRegistroTexto = estado == null
+        ? 'Sin registros'
+        : 'Último registro: hace ${estado.diasDesdeUltimoRegistro} días';
+
+    return EcronoCard(
+      padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 8),
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Row(
             crossAxisAlignment: CrossAxisAlignment.start,
             children: [
-              Text(
-                paciente.nombre,
-                style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                  color: _caregiverTextPrimary,
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: _estadoColor().withValues(alpha: 0.12),
+                  borderRadius: BorderRadius.circular(AppTheme.radiusSm),
                 ),
+                child: Icon(_estadoIcono(), color: _estadoColor(), size: 19),
               ),
-              const SizedBox(height: AppTheme.spacingXs),
-              Text(
-                'Parentesco: ${paciente.parentesco}',
-                style: const TextStyle(
-                  fontSize: 15,
-                  height: 1.35,
-                  color: _caregiverTextSecondary,
+              const SizedBox(width: 10),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Row(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        Expanded(
+                          child: Text(
+                            paciente.nombre,
+                            style: _caregiverPatientNameStyle,
+                          ),
+                        ),
+                        const SizedBox(width: 6),
+                        EcronoStatusBadge(
+                          text: _estadoTexto(),
+                          status: _estadoTipo(),
+                        ),
+                      ],
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      ultimoRegistroTexto,
+                      style: _caregiverDescriptionStyle,
+                    ),
+                    const SizedBox(height: 2),
+                    Text(
+                      'Parentesco: ${paciente.parentesco}',
+                      style: _caregiverDescriptionStyle,
+                    ),
+                  ],
                 ),
-              ),
-              const SizedBox(height: AppTheme.spacingSm),
-              EcronoStatusBadge(
-                text: paciente.esPrincipal
-                    ? 'Cuidador principal'
-                    : 'Cuidador asociado',
-                status: paciente.esPrincipal
-                    ? EcronoStatusType.success
-                    : EcronoStatusType.info,
               ),
             ],
           ),
+          if (paciente.usandoFallbackGlobal) ...[
+            const SizedBox(height: 4),
+            const Text(
+              'Estado basado en registros disponibles.',
+              style: TextStyle(
+                fontSize: 11,
+                height: 1.25,
+                color: _caregiverTextSecondary,
+              ),
+            ),
+          ],
+          const SizedBox(height: 8),
+          _CaregiverActionButtons(
+            onRegistrarControl: () => _registrarControl(context),
+            onAbrirRegistros: () => _verRegistros(context),
+            onAgregarMedicamento: () =>
+                _agregarRecordatorioMedicamento(context),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _CaregiverActionButtons extends StatelessWidget {
+  const _CaregiverActionButtons({
+    required this.onRegistrarControl,
+    required this.onAbrirRegistros,
+    required this.onAgregarMedicamento,
+  });
+
+  final VoidCallback onRegistrarControl;
+  final VoidCallback onAbrirRegistros;
+  final VoidCallback onAgregarMedicamento;
+
+  @override
+  Widget build(BuildContext context) {
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final bool usarColumna = constraints.maxWidth < 330;
+        final registrar = _CaregiverActionButton(
+          label: 'Registrar',
+          icon: Icons.add,
+          onPressed: onRegistrarControl,
+          isPrimary: true,
+        );
+        final registros = _CaregiverActionButton(
+          label: 'Ver registros',
+          icon: Icons.description_outlined,
+          onPressed: onAbrirRegistros,
+        );
+        final medicamento = _CaregiverActionButton(
+          label: 'Medicamento',
+          icon: Icons.medication_outlined,
+          onPressed: onAgregarMedicamento,
+        );
+
+        if (usarColumna) {
+          return Column(
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              registrar,
+              const SizedBox(height: 6),
+              registros,
+              const SizedBox(height: 6),
+              medicamento,
+            ],
+          );
+        }
+
+        return Row(
+          children: [
+            Expanded(child: registrar),
+            const SizedBox(width: 6),
+            Expanded(child: registros),
+            const SizedBox(width: 6),
+            Expanded(child: medicamento),
+          ],
+        );
+      },
+    );
+  }
+}
+
+class _CaregiverActionButton extends StatelessWidget {
+  const _CaregiverActionButton({
+    required this.label,
+    required this.icon,
+    required this.onPressed,
+    this.isPrimary = false,
+  });
+
+  final String label;
+  final IconData icon;
+  final VoidCallback onPressed;
+  final bool isPrimary;
+
+  @override
+  Widget build(BuildContext context) {
+    final RoundedRectangleBorder shape = RoundedRectangleBorder(
+      borderRadius: BorderRadius.circular(24),
+    );
+    final Widget child = FittedBox(
+      fit: BoxFit.scaleDown,
+      child: Row(
+        mainAxisSize: MainAxisSize.min,
+        children: [Icon(icon, size: 15), const SizedBox(width: 4), Text(label)],
+      ),
+    );
+
+    if (isPrimary) {
+      return SizedBox(
+        height: 36,
+        child: ElevatedButton(
+          onPressed: onPressed,
+          style: ElevatedButton.styleFrom(
+            backgroundColor: _caregiverHeaderBlue,
+            foregroundColor: Colors.white,
+            elevation: 0,
+            minimumSize: const Size(0, 36),
+            padding: const EdgeInsets.symmetric(horizontal: 6),
+            tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+            shape: shape,
+            textStyle: const TextStyle(
+              fontSize: 12,
+              fontWeight: FontWeight.w700,
+            ),
+          ),
+          child: child,
         ),
-      ],
+      );
+    }
+
+    return SizedBox(
+      height: 36,
+      child: OutlinedButton(
+        onPressed: onPressed,
+        style: OutlinedButton.styleFrom(
+          foregroundColor: _caregiverHeaderBlue,
+          side: BorderSide(color: Colors.grey.shade300),
+          minimumSize: const Size(0, 36),
+          padding: const EdgeInsets.symmetric(horizontal: 6),
+          tapTargetSize: MaterialTapTargetSize.shrinkWrap,
+          shape: shape,
+          textStyle: const TextStyle(fontSize: 12, fontWeight: FontWeight.w600),
+        ),
+        child: child,
+      ),
     );
   }
 }
@@ -548,84 +832,9 @@ class _CaregiverSectionTitle extends StatelessWidget {
   Widget build(BuildContext context) {
     return Row(
       children: [
-        Icon(icon, color: _caregiverHeaderBlue, size: 26),
-        const SizedBox(width: AppTheme.spacingSm),
-        Expanded(
-          child: Text(
-            title,
-            style: const TextStyle(
-              fontSize: 21,
-              fontWeight: FontWeight.w700,
-              color: _caregiverTextPrimary,
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
-class _CaregiverStatusItem extends StatelessWidget {
-  const _CaregiverStatusItem({
-    required this.icon,
-    required this.title,
-    required this.detail,
-    required this.statusText,
-    required this.statusType,
-  });
-
-  final IconData icon;
-  final String title;
-  final String detail;
-  final String statusText;
-  final EcronoStatusType statusType;
-
-  Color _statusColor(EcronoStatusType statusType) {
-    switch (statusType) {
-      case EcronoStatusType.success:
-        return _caregiverSuccess;
-      case EcronoStatusType.warning:
-        return _caregiverWarning;
-      case EcronoStatusType.danger:
-        return AppTheme.alertRed;
-      case EcronoStatusType.info:
-        return AppTheme.actionBlue;
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        Icon(icon, color: _statusColor(statusType), size: 30),
-        const SizedBox(width: AppTheme.spacingSm),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 17,
-                  fontWeight: FontWeight.w700,
-                  color: _caregiverTextPrimary,
-                ),
-              ),
-              const SizedBox(height: AppTheme.spacingXs),
-              Text(
-                detail,
-                style: const TextStyle(
-                  fontSize: 15,
-                  height: 1.35,
-                  color: _caregiverTextSecondary,
-                ),
-              ),
-              const SizedBox(height: AppTheme.spacingSm),
-              EcronoStatusBadge(text: statusText, status: statusType),
-            ],
-          ),
-        ),
+        Icon(icon, color: _caregiverHeaderBlue, size: 23),
+        const SizedBox(width: 6),
+        Expanded(child: Text(title, style: _caregiverSectionTitleStyle)),
       ],
     );
   }

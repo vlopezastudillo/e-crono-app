@@ -107,10 +107,18 @@ class _PantallaInicialState extends State<PantallaInicial> {
           if (!mounted) return;
 
           // Navegar según el rol
-          if (role == 'patient') {
-            Navigator.pushNamed(context, AppRoutes.paciente);
-          } else if (role == 'caregiver') {
-            Navigator.pushNamed(context, AppRoutes.cuidador);
+          if (role == 'patient' || role == 'paciente') {
+            Navigator.pushNamedAndRemoveUntil(
+              context,
+              AppRoutes.paciente,
+              (route) => false,
+            );
+          } else if (role == 'caregiver' || role == 'cuidador') {
+            Navigator.pushNamedAndRemoveUntil(
+              context,
+              AppRoutes.cuidador,
+              (route) => false,
+            );
           } else {
             // Rol desconocido, mostrar error
             ScaffoldMessenger.of(
