@@ -20,10 +20,10 @@ class PantallaEditarPerfil extends StatefulWidget {
 
 class _PantallaEditarPerfilState extends State<PantallaEditarPerfil> {
   static _PerfilLocal _perfilLocal = const _PerfilLocal(
-    nombre: 'María Ester Silva',
-    usuario: 'paciente_demo',
-    direccion: 'Av. Salud Digital 123',
-    telefono: '+56 9 1234 5678',
+    nombre: 'Sin nombre',
+    usuario: 'Sin usuario',
+    direccion: 'Sin dirección',
+    telefono: 'Sin teléfono',
   );
 
   late final TextEditingController _nombreController;
@@ -50,7 +50,7 @@ class _PantallaEditarPerfilState extends State<PantallaEditarPerfil> {
       return;
     }
 
-    if (_usuarioController.text != 'paciente_demo') {
+    if (_usuarioController.text != 'Sin usuario') {
       return;
     }
 

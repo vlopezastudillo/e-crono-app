@@ -5,6 +5,7 @@ import 'package:http/http.dart' as http;
 
 import '../app_routes.dart';
 import '../api_constants.dart';
+import '../services/biometric_auth_service.dart';
 import '../session_helper.dart';
 
 // Pantalla principal de inicio de sesión.
@@ -19,6 +20,8 @@ class _PantallaInicialState extends State<PantallaInicial> {
   TextEditingController? _rutController;
   TextEditingController? _passwordController;
   bool _logueando = false;
+  bool _autenticandoBiometria = false;
+  bool _mostrarIngresoBiometrico = false;
 
   TextEditingController get _rutInputController =>
       _rutController ??= TextEditingController();
@@ -31,6 +34,7 @@ class _PantallaInicialState extends State<PantallaInicial> {
     // Inicializa los campos del login antes del primer build.
     _rutController = TextEditingController();
     _passwordController = TextEditingController();
+    _actualizarEstadoBiometria();
   }
 
   @override
@@ -58,6 +62,149 @@ class _PantallaInicialState extends State<PantallaInicial> {
     return int.tryParse(valor.toString());
   }
 
+  void _navegarSegunRol(String role) {
+    if (role == 'patient' || role == 'paciente') {
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        AppRoutes.paciente,
+        (route) => false,
+      );
+    } else if (role == 'caregiver' || role == 'cuidador') {
+      Navigator.pushNamedAndRemoveUntil(
+        context,
+        AppRoutes.cuidador,
+        (route) => false,
+      );
+    } else {
+      ScaffoldMessenger.of(
+        context,
+      ).showSnackBar(SnackBar(content: Text('Rol desconocido: $role')));
+    }
+  }
+
+  Future<void> _actualizarEstadoBiometria() async {
+    final bool puedeUsarBiometria =
+        await SessionHelper.puedeUsarBiometriaLocal() &&
+        await BiometricAuthService.biometriaDisponible();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _mostrarIngresoBiometrico = puedeUsarBiometria;
+    });
+  }
+
+  Future<void> _ingresarConBiometria() async {
+    if (_autenticandoBiometria) {
+      return;
+    }
+
+    setState(() {
+      _autenticandoBiometria = true;
+    });
+
+    final bool puedeUsarBiometria =
+        await SessionHelper.puedeUsarBiometriaLocal();
+    final bool autenticado = puedeUsarBiometria
+        ? await BiometricAuthService.autenticar()
+        : false;
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _autenticandoBiometria = false;
+    });
+
+    if (!autenticado) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo validar la biometría.')),
+      );
+      return;
+    }
+
+    final String? role = (await SessionHelper.obtenerRol())?.toLowerCase();
+    if (!mounted) {
+      return;
+    }
+
+    if (role == null || role.isEmpty) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(content: Text('No se pudo recuperar la sesión.')),
+      );
+      return;
+    }
+
+    _navegarSegunRol(role);
+  }
+
+  Future<void> _ofrecerActivarBiometriaSiCorresponde() async {
+    if (await SessionHelper.biometricEnabled()) {
+      return;
+    }
+
+    final bool disponible = await BiometricAuthService.biometriaDisponible();
+    if (!disponible || !mounted) {
+      return;
+    }
+
+    final bool activar =
+        await showDialog<bool>(
+          context: context,
+          builder: (context) => AlertDialog(
+            title: const Text('Activar ingreso biométrico'),
+            content: const Text(
+              'Podrás desbloquear e-Crono en este dispositivo usando biometría mientras tu sesión esté activa.',
+            ),
+            actions: [
+              TextButton(
+                onPressed: () => Navigator.pop(context, false),
+                child: const Text('Ahora no'),
+              ),
+              FilledButton(
+                onPressed: () => Navigator.pop(context, true),
+                child: const Text('Activar'),
+              ),
+            ],
+          ),
+        ) ??
+        false;
+
+    if (!activar) {
+      return;
+    }
+
+    final bool autenticado = await BiometricAuthService.autenticar();
+    if (autenticado) {
+      await SessionHelper.setBiometricEnabled(true);
+    }
+  }
+
+  Future<bool> _intentarLoginOffline() async {
+    final bool haySesion = await SessionHelper.haySesionActiva();
+    if (!haySesion) {
+      return false;
+    }
+
+    final String? role = (await SessionHelper.obtenerRol())?.toLowerCase();
+    if (role == null || role.isEmpty) {
+      return false;
+    }
+
+    if (!mounted) {
+      return true;
+    }
+
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(content: Text('Entrando en modo sin conexión')),
+    );
+    _navegarSegunRol(role);
+    return true;
+  }
+
   /// Intenta hacer login real con el backend.
   Future<void> _intentarLogin() async {
     final String identifier = _rutInputController.text.trim();
@@ -81,9 +228,6 @@ class _PantallaInicialState extends State<PantallaInicial> {
         body: jsonEncode({'identifier': identifier, 'password': password}),
       );
 
-      debugPrint('POST login: estado HTTP ${response.statusCode}');
-      debugPrint('POST login: respuesta ${response.body}');
-
       if (response.statusCode == 200) {
         final dynamic data = jsonDecode(response.body);
         if (data is! Map<String, dynamic>) {
@@ -91,14 +235,20 @@ class _PantallaInicialState extends State<PantallaInicial> {
         }
 
         final String? token = _leerTexto(data['token']);
+        final String? accessToken = _leerTexto(data['access']);
+        final String? refreshToken = _leerTexto(data['refresh']);
         final String? username = _leerTexto(data['username']);
         final String? role = _leerTexto(data['role'])?.toLowerCase();
         final int? patientId = _leerEntero(data['patient_id']);
 
-        if (token != null && username != null && role != null) {
+        if ((accessToken != null || token != null) &&
+            username != null &&
+            role != null) {
           // Guarda la sesion real para usarla en las siguientes llamadas API.
           await SessionHelper.guardarSesion(
             token: token,
+            accessToken: accessToken,
+            refreshToken: refreshToken,
             username: username,
             role: role,
             patientId: patientId,
@@ -106,25 +256,11 @@ class _PantallaInicialState extends State<PantallaInicial> {
 
           if (!mounted) return;
 
+          await _ofrecerActivarBiometriaSiCorresponde();
+          if (!mounted) return;
+
           // Navegar según el rol
-          if (role == 'patient' || role == 'paciente') {
-            Navigator.pushNamedAndRemoveUntil(
-              context,
-              AppRoutes.paciente,
-              (route) => false,
-            );
-          } else if (role == 'caregiver' || role == 'cuidador') {
-            Navigator.pushNamedAndRemoveUntil(
-              context,
-              AppRoutes.cuidador,
-              (route) => false,
-            );
-          } else {
-            // Rol desconocido, mostrar error
-            ScaffoldMessenger.of(
-              context,
-            ).showSnackBar(SnackBar(content: Text('Rol desconocido: $role')));
-          }
+          _navegarSegunRol(role);
           return;
         }
       }
@@ -134,8 +270,12 @@ class _PantallaInicialState extends State<PantallaInicial> {
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('Usuario o contraseña incorrectos')),
       );
-    } catch (e) {
-      debugPrint('Error en login: $e');
+    } catch (_) {
+      final bool entroOffline = await _intentarLoginOffline();
+      if (entroOffline) {
+        return;
+      }
+
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         const SnackBar(content: Text('No se pudo conectar. Intenta de nuevo.')),
@@ -343,6 +483,41 @@ class _PantallaInicialState extends State<PantallaInicial> {
                                   : const Text('Entrar'),
                             ),
                           ),
+                          if (_mostrarIngresoBiometrico) ...[
+                            const SizedBox(height: 12),
+                            SizedBox(
+                              width: double.infinity,
+                              height: 48,
+                              child: OutlinedButton.icon(
+                                onPressed: _autenticandoBiometria
+                                    ? null
+                                    : _ingresarConBiometria,
+                                icon: _autenticandoBiometria
+                                    ? const SizedBox(
+                                        width: 18,
+                                        height: 18,
+                                        child: CircularProgressIndicator(
+                                          strokeWidth: 2,
+                                        ),
+                                      )
+                                    : const Icon(Icons.fingerprint),
+                                label: const Text('Ingresar con biometría'),
+                                style: OutlinedButton.styleFrom(
+                                  foregroundColor: const Color(0xFF0A2B4E),
+                                  side: const BorderSide(
+                                    color: Color(0xFF0A2B4E),
+                                  ),
+                                  shape: RoundedRectangleBorder(
+                                    borderRadius: BorderRadius.circular(12),
+                                  ),
+                                  textStyle: const TextStyle(
+                                    fontSize: 15,
+                                    fontWeight: FontWeight.w600,
+                                  ),
+                                ),
+                              ),
+                            ),
+                          ],
                         ],
                       ),
                     ),

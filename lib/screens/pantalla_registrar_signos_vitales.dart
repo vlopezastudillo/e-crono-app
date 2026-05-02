@@ -1,10 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../app_navigation.dart';
 import '../api_constants.dart';
+import '../services/offline_vital_signs_service.dart';
 import '../services/pacientes_cuidador_service.dart';
 import '../session_helper.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
@@ -51,7 +51,7 @@ const TextStyle _hintSmallStyle = TextStyle(
   fontWeight: FontWeight.normal,
 );
 
-// Pantalla simple para registrar signos vitales en modo demo.
+// Pantalla simple para registrar signos vitales.
 class PantallaRegistrarSignosVitales extends StatefulWidget {
   const PantallaRegistrarSignosVitales({
     super.key,
@@ -81,6 +81,8 @@ class _PantallaRegistrarSignosVitalesState
   int? _selectedPatientId;
   String? _selectedPatientName;
   bool _guardandoRegistro = false;
+  bool _sincronizandoPendientes = false;
+  int _registrosPendientesSincronizacion = 0;
 
   TextEditingController get _presionSistolicaInputController =>
       _presionSistolicaController ??= TextEditingController();
@@ -106,6 +108,7 @@ class _PantallaRegistrarSignosVitalesState
     _pacientesFuture = _pacientesService.cargarPacientesACargo();
     _selectedPatientId = widget.patientId;
     _selectedPatientName = widget.patientName;
+    _cargarRegistrosPendientesSincronizacion();
   }
 
   @override
@@ -183,18 +186,45 @@ class _PantallaRegistrarSignosVitalesState
       _guardandoRegistro = true;
     });
 
+    final Map<String, dynamic>? datosRegistro =
+        await _construirDatosRegistroParaEnvio(
+          presionSistolica: presionSistolica,
+          presionDiastolica: presionDiastolica,
+          frecuenciaCardiaca: frecuenciaCardiaca,
+          glucosa: glucosa,
+          observaciones: observaciones,
+          patientIdParaRegistro: patientIdParaRegistro,
+        );
+
+    if (datosRegistro == null) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _guardandoRegistro = false;
+      });
+      _mostrarErrorValidacion('No se pudo preparar el registro.');
+      return;
+    }
+
     final int? codigoEstadoHttp = await _enviarRegistroAlBackend(
-      presionSistolica: presionSistolica,
-      presionDiastolica: presionDiastolica,
-      frecuenciaCardiaca: frecuenciaCardiaca,
-      glucosa: glucosa,
-      observaciones: observaciones,
-      patientIdParaRegistro: patientIdParaRegistro,
+      datosRegistro: datosRegistro,
     );
     final bool guardadoEnBackend =
         codigoEstadoHttp != null &&
         codigoEstadoHttp >= 200 &&
         codigoEstadoHttp < 300;
+    bool guardadoLocalmente = false;
+    int? registrosPendientesActualizados;
+
+    if (!guardadoEnBackend) {
+      guardadoLocalmente = await _guardarRegistroPendienteLocal(datosRegistro);
+      if (guardadoLocalmente) {
+        registrosPendientesActualizados =
+            await _contarRegistrosRealesPendientes();
+      }
+    }
 
     if (!mounted) {
       return;
@@ -202,6 +232,9 @@ class _PantallaRegistrarSignosVitalesState
 
     setState(() {
       _guardandoRegistro = false;
+      if (registrosPendientesActualizados != null) {
+        _registrosPendientesSincronizacion = registrosPendientesActualizados;
+      }
     });
 
     ScaffoldMessenger.of(context).showSnackBar(
@@ -209,7 +242,9 @@ class _PantallaRegistrarSignosVitalesState
         content: Text(
           guardadoEnBackend
               ? 'Registro guardado correctamente'
-              : 'Registro guardado en modo demo',
+              : guardadoLocalmente
+              ? 'Guardado sin conexión. Pendiente de sincronizar.'
+              : 'No se pudo guardar el registro. Intente nuevamente.',
         ),
       ),
     );
@@ -280,6 +315,91 @@ class _PantallaRegistrarSignosVitalesState
     ).showSnackBar(SnackBar(content: Text(mensaje)));
   }
 
+  Future<void> _cargarRegistrosPendientesSincronizacion() async {
+    final int cantidad = await _contarRegistrosRealesPendientes();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _registrosPendientesSincronizacion = cantidad;
+    });
+  }
+
+  Future<void> _sincronizarRegistrosPendientes() async {
+    if (_sincronizandoPendientes) {
+      return;
+    }
+
+    setState(() {
+      _sincronizandoPendientes = true;
+    });
+
+    final List<Map<String, dynamic>> registrosPendientes =
+        await OfflineVitalSignsService.obtenerRegistrosPendientes();
+    final List<Map<String, dynamic>> registrosReales = registrosPendientes
+        .where((registro) => registro['is_demo'] != 'true')
+        .toList();
+    bool huboFallas = false;
+
+    for (final Map<String, dynamic> registro in registrosReales) {
+      final String? localId = registro['local_id']?.toString().trim();
+      if (localId == null || localId.isEmpty) {
+        huboFallas = true;
+        continue;
+      }
+
+      final Map<String, dynamic> datosRegistro =
+          _prepararRegistroPendienteParaBackend(registro);
+      final int? codigoEstadoHttp = await _enviarRegistroAlBackend(
+        datosRegistro: datosRegistro,
+      );
+      final bool sincronizado =
+          codigoEstadoHttp != null &&
+          codigoEstadoHttp >= 200 &&
+          codigoEstadoHttp < 300;
+
+      if (!sincronizado) {
+        huboFallas = true;
+        continue;
+      }
+
+      final bool eliminado =
+          await OfflineVitalSignsService.eliminarRegistroPendiente(localId);
+      if (!eliminado) {
+        huboFallas = true;
+      }
+    }
+
+    final int cantidadActualizada = await _contarRegistrosRealesPendientes();
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _sincronizandoPendientes = false;
+      _registrosPendientesSincronizacion = cantidadActualizada;
+    });
+
+    if (huboFallas) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Algunos registros no pudieron sincronizarse'),
+        ),
+      );
+    }
+  }
+
+  Future<int> _contarRegistrosRealesPendientes() async {
+    final List<Map<String, dynamic>> registrosPendientes =
+        await OfflineVitalSignsService.obtenerRegistrosPendientes();
+    return registrosPendientes
+        .where((registro) => registro['is_demo'] != 'true')
+        .length;
+  }
+
   Future<bool> _usuarioActualEsCuidador() async {
     final String? role = await SessionHelper.getRole();
     return _esRolCuidador(role);
@@ -333,7 +453,7 @@ class _PantallaRegistrarSignosVitalesState
     AppNavigation.abrirMisRegistros(context);
   }
 
-  Future<int?> _enviarRegistroAlBackend({
+  Future<Map<String, dynamic>?> _construirDatosRegistroParaEnvio({
     required int presionSistolica,
     required int presionDiastolica,
     required int? frecuenciaCardiaca,
@@ -373,28 +493,58 @@ class _PantallaRegistrarSignosVitalesState
       } else if (haySesion && esCuidador) {
         return null;
       } else {
-        // patient: 1 solo se conserva para modo demo sin sesión.
-        datosRegistro['patient'] = 1;
+        return null;
       }
 
+      return datosRegistro;
+    } catch (_) {
+      return null;
+    }
+  }
+
+  Future<int?> _enviarRegistroAlBackend({
+    required Map<String, dynamic> datosRegistro,
+  }) async {
+    try {
       final String cuerpoJson = jsonEncode(datosRegistro);
 
-      debugPrint('POST signos vitales: JSON enviado $cuerpoJson');
-
-      // Intenta guardar en el endpoint real antes de usar el modo demo.
-      final response = await http.post(
+      final response = await SessionHelper.authenticatedPost(
         Uri.parse(apiVitalSignRecordsUrl),
-        headers: headers,
         body: cuerpoJson,
       );
 
-      debugPrint('POST signos vitales: estado HTTP ${response.statusCode}');
-      debugPrint('POST signos vitales: respuesta ${response.body}');
       return response.statusCode;
     } catch (_) {
-      // Si falla el backend o no hay sesion, se mantiene el fallback demo.
       return null;
     }
+  }
+
+  Map<String, dynamic> _prepararRegistroPendienteParaBackend(
+    Map<String, dynamic> registroPendiente,
+  ) {
+    final Map<String, dynamic> datosRegistro = Map<String, dynamic>.from(
+      registroPendiente,
+    );
+    datosRegistro.remove('local_id');
+    datosRegistro.remove('created_at_local');
+    datosRegistro.remove('sync_status');
+    datosRegistro.remove('is_demo');
+    return datosRegistro;
+  }
+
+  Future<bool> _guardarRegistroPendienteLocal(
+    Map<String, dynamic> datosRegistro,
+  ) async {
+    final dynamic patient = datosRegistro['patient'];
+    final String createdAtLocal = DateTime.now().toIso8601String();
+    final Map<String, dynamic> registroPendiente = {
+      ...datosRegistro,
+      'local_id': 'vital_${patient}_${DateTime.now().millisecondsSinceEpoch}',
+      'created_at_local': createdAtLocal,
+      'sync_status': 'pending',
+    };
+
+    return OfflineVitalSignsService.guardarRegistroPendiente(registroPendiente);
   }
 
   @override
@@ -596,6 +746,20 @@ class _PantallaRegistrarSignosVitalesState
                     ),
                     const SizedBox(height: 12),
                     const _OfflineNotice(),
+                    if (_registrosPendientesSincronizacion > 0) ...[
+                      const SizedBox(height: 8),
+                      _PendingSyncNotice(
+                        cantidad: _registrosPendientesSincronizacion,
+                      ),
+                      const SizedBox(height: 8),
+                      EcronoSecondaryButton(
+                        text: 'Sincronizar pendientes',
+                        icon: Icons.sync,
+                        onPressed: _sincronizandoPendientes
+                            ? null
+                            : _sincronizarRegistrosPendientes,
+                      ),
+                    ],
                     const SizedBox(height: 12),
                   ],
                 ),
@@ -996,6 +1160,41 @@ class _OfflineNotice extends StatelessWidget {
                   ),
                   TextSpan(text: ' cuando haya conexión'),
                 ],
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _PendingSyncNotice extends StatelessWidget {
+  const _PendingSyncNotice({required this.cantidad});
+
+  final int cantidad;
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.all(14),
+      decoration: BoxDecoration(
+        color: const Color(0xFFFFF7ED),
+        borderRadius: BorderRadius.circular(8),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          const Icon(Icons.sync_problem, color: Color(0xFFC2410C), size: 20),
+          const SizedBox(width: 10),
+          Expanded(
+            child: Text(
+              'Tienes $cantidad registro(s) pendiente(s) de sincronizar.',
+              style: const TextStyle(
+                fontSize: 12,
+                height: 1.35,
+                color: Color(0xFF9A3412),
+                fontWeight: FontWeight.w600,
               ),
             ),
           ),

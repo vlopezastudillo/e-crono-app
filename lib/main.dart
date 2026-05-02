@@ -9,11 +9,16 @@ import 'screens/pantalla_inicial.dart';
 import 'screens/pantalla_mis_registros.dart';
 import 'screens/pantalla_pendientes.dart';
 import 'screens/pantalla_registrar_signos_vitales.dart';
+import 'services/connectivity_sync_service.dart';
+import 'services/offline_vital_signs_service.dart';
 import 'theme/app_theme.dart';
 import 'screens/vista_cuidador.dart';
 import 'screens/vista_paciente.dart';
 
-void main() {
+Future<void> main() async {
+  WidgetsFlutterBinding.ensureInitialized();
+  await OfflineVitalSignsService.limpiarDatosDemo();
+  ConnectivitySyncService.iniciarListener();
   runApp(const ECronoApp());
 }
 

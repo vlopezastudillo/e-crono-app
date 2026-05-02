@@ -1,7 +1,6 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../app_navigation.dart';
 import '../api_constants.dart';
@@ -16,9 +15,6 @@ const Color _dashboardBackground = Color(0xFFF3F4F6);
 const Color _dashboardHeaderBlue = Color(0xFF0A2B4E);
 const Color _dashboardBorder = Color(0xFFE5E7EB);
 const Color _dashboardTextSecondary = Color(0xFF6B7280);
-const Color _dashboardSuccess = Color(0xFF10B981);
-const Color _dashboardAlert = Color(0xFFEF4444);
-const Color _dashboardWarning = Color(0xFFF59E0B);
 const TextStyle _dashboardTitleStyle = TextStyle(
   fontSize: 18,
   fontWeight: FontWeight.w700,
@@ -34,15 +30,6 @@ const TextStyle _dashboardDescriptionStyle = TextStyle(
   fontWeight: FontWeight.normal,
   height: 1.35,
   color: Color(0xFF6B7280),
-);
-const TextStyle _dashboardSmallStyle = TextStyle(
-  fontSize: 11,
-  fontWeight: FontWeight.normal,
-  color: Color(0xFF6B7280),
-);
-const TextStyle _dashboardSmallBoldStyle = TextStyle(
-  fontSize: 11,
-  fontWeight: FontWeight.w600,
 );
 
 // Pantalla principal del flujo paciente.
@@ -69,14 +56,16 @@ class _VistaPacienteState extends State<VistaPaciente> {
 
   Future<_PacienteResumen?> _cargarPaciente() async {
     try {
-      // Reutiliza el helper para enviar Authorization: Token <token>.
+      // Reutiliza el helper para enviar Authorization con la sesión actual.
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
       if (!headers.containsKey('Authorization')) {
         return null;
       }
 
-      final response = await http.get(Uri.parse(apiMeUrl), headers: headers);
+      final response = await SessionHelper.authenticatedGet(
+        Uri.parse(apiMeUrl),
+      );
 
       if (response.statusCode != 200) {
         return null;
@@ -105,7 +94,6 @@ class _VistaPacienteState extends State<VistaPaciente> {
         observaciones: _leerTexto(patient['observaciones']),
       );
     } catch (_) {
-      // Si falla la API, se mantiene la informacion demo existente.
       return null;
     }
   }
@@ -189,12 +177,12 @@ class _VistaPacienteState extends State<VistaPaciente> {
                       final _PacienteResumen? paciente = snapshot.data;
                       final bool cargando =
                           snapshot.connectionState != ConnectionState.done;
-                      final bool usarDemo = !cargando && paciente == null;
+                      final bool sinDatos = !cargando && paciente == null;
 
                       return _PacientePrincipalCard(
-                        paciente: paciente ?? _PacienteResumen.demo(),
+                        paciente: paciente ?? _PacienteResumen.vacio(),
                         cargando: cargando,
-                        usarDemo: usarDemo,
+                        sinDatos: sinDatos,
                         onAbrirMisRegistros: () => _abrirMisRegistros(context),
                         onRegistrarControl: () =>
                             _abrirRegistroControl(context),
@@ -215,14 +203,11 @@ class _VistaPacienteState extends State<VistaPaciente> {
                   children: [
                     const Padding(
                       padding: EdgeInsets.all(16),
-                      child: _ControlItem(
-                        title: 'Control médico',
-                        detail: 'CESFAM San Vicente',
-                        statusText: 'Falta 3 días',
-                        statusType: EcronoStatusType.info,
+                      child: Text(
+                        'No hay controles médicos disponibles.',
+                        style: _dashboardDescriptionStyle,
                       ),
                     ),
-                    const Divider(height: 1, color: _dashboardBorder),
                     InkWell(
                       onTap: () => _abrirCalendarioControles(context),
                       borderRadius: const BorderRadius.vertical(
@@ -273,10 +258,7 @@ class _VistaPacienteState extends State<VistaPaciente> {
 
                   final MedicationRemindersResult result =
                       snapshot.data ??
-                      const MedicationRemindersResult(
-                        recordatorios: [],
-                        usandoDemo: false,
-                      );
+                      const MedicationRemindersResult(recordatorios: []);
                   final List<MedicationReminder> recordatoriosActivos = result
                       .recordatorios
                       .where((recordatorio) => recordatorio.activo)
@@ -284,7 +266,6 @@ class _VistaPacienteState extends State<VistaPaciente> {
 
                   return _MedicationRemindersBlock(
                     recordatorios: recordatoriosActivos,
-                    usandoDemo: result.usandoDemo,
                   );
                 },
               ),
@@ -322,11 +303,10 @@ class _PacienteResumen {
   final String? direccion;
   final String? observaciones;
 
-  // Datos demo originales para casos sin token o con falla de API.
-  factory _PacienteResumen.demo() {
+  factory _PacienteResumen.vacio() {
     return const _PacienteResumen(
-      nombre: 'María Ester Silva',
-      rut: '6.372.XXX-X',
+      nombre: 'No hay datos disponibles',
+      rut: 'Sin información local real',
     );
   }
 }
@@ -335,14 +315,14 @@ class _PacientePrincipalCard extends StatelessWidget {
   const _PacientePrincipalCard({
     required this.paciente,
     required this.cargando,
-    required this.usarDemo,
+    required this.sinDatos,
     required this.onAbrirMisRegistros,
     required this.onRegistrarControl,
   });
 
   final _PacienteResumen paciente;
   final bool cargando;
-  final bool usarDemo;
+  final bool sinDatos;
   final VoidCallback onAbrirMisRegistros;
   final VoidCallback onRegistrarControl;
 
@@ -403,9 +383,12 @@ class _PacientePrincipalCard extends StatelessWidget {
   }
 
   List<Widget> _crearDatosPaciente() {
-    if (usarDemo) {
+    if (sinDatos) {
       return const [
-        _PacienteInfoRow(label: '', value: '72 años - RUT: 6.372.XXX-X'),
+        _PacienteInfoRow(
+          label: '',
+          value: 'No hay información real cacheada para mostrar.',
+        ),
       ];
     }
 
@@ -647,99 +630,6 @@ class _DashboardSectionTitle extends StatelessWidget {
   }
 }
 
-class _ControlItem extends StatelessWidget {
-  const _ControlItem({
-    required this.title,
-    required this.detail,
-    required this.statusText,
-    required this.statusType,
-  });
-
-  final String title;
-  final String detail;
-  final String statusText;
-  final EcronoStatusType statusType;
-
-  Color _statusColor(EcronoStatusType statusType) {
-    switch (statusType) {
-      case EcronoStatusType.success:
-        return _dashboardSuccess;
-      case EcronoStatusType.warning:
-        return _dashboardWarning;
-      case EcronoStatusType.danger:
-        return _dashboardAlert;
-      case EcronoStatusType.info:
-        return const Color(0xFF0284C7);
-    }
-  }
-
-  @override
-  Widget build(BuildContext context) {
-    return Row(
-      crossAxisAlignment: CrossAxisAlignment.center,
-      children: [
-        SizedBox(
-          width: 48,
-          child: Column(
-            children: const [
-              Text(
-                '15',
-                style: TextStyle(
-                  fontSize: 24,
-                  fontWeight: FontWeight.bold,
-                  color: Color(0xFF1F2937),
-                ),
-              ),
-              SizedBox(height: 2),
-              Text('DIC', style: _dashboardSmallStyle),
-            ],
-          ),
-        ),
-        const SizedBox(width: 14),
-        Expanded(
-          child: Column(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Text(
-                title,
-                style: const TextStyle(
-                  fontSize: 13,
-                  fontWeight: FontWeight.normal,
-                  color: Color(0xFF1F2937),
-                ),
-              ),
-              const SizedBox(height: 4),
-              Text(detail, style: _dashboardDescriptionStyle),
-              const SizedBox(height: 6),
-              const Row(
-                children: [
-                  Icon(Icons.schedule, color: Color(0xFF6B7280), size: 15),
-                  SizedBox(width: 4),
-                  Text('09:30 hrs.', style: _dashboardSmallStyle),
-                ],
-              ),
-            ],
-          ),
-        ),
-        const SizedBox(width: 10),
-        Container(
-          padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 5),
-          decoration: BoxDecoration(
-            color: const Color(0xFFE0F2FE),
-            borderRadius: BorderRadius.circular(16),
-          ),
-          child: Text(
-            statusText,
-            style: _dashboardSmallBoldStyle.copyWith(
-              color: _statusColor(statusType),
-            ),
-          ),
-        ),
-      ],
-    );
-  }
-}
-
 class _MedicationRemindersLoading extends StatelessWidget {
   const _MedicationRemindersLoading();
 
@@ -771,13 +661,9 @@ class _MedicationRemindersLoading extends StatelessWidget {
 }
 
 class _MedicationRemindersBlock extends StatelessWidget {
-  const _MedicationRemindersBlock({
-    required this.recordatorios,
-    required this.usandoDemo,
-  });
+  const _MedicationRemindersBlock({required this.recordatorios});
 
   final List<MedicationReminder> recordatorios;
-  final bool usandoDemo;
 
   @override
   Widget build(BuildContext context) {
@@ -810,10 +696,6 @@ class _MedicationRemindersBlock extends StatelessWidget {
       padding: const EdgeInsets.symmetric(horizontal: 16),
       child: Column(
         children: [
-          if (usandoDemo) ...[
-            const _MedicationDemoNotice(),
-            const SizedBox(height: 10),
-          ],
           ...recordatorios.expand((recordatorio) sync* {
             if (recordatorio != recordatorios.first) {
               yield const SizedBox(height: 12);
@@ -821,41 +703,6 @@ class _MedicationRemindersBlock extends StatelessWidget {
 
             yield _MedicationItem(recordatorio: recordatorio);
           }),
-        ],
-      ),
-    );
-  }
-}
-
-class _MedicationDemoNotice extends StatelessWidget {
-  const _MedicationDemoNotice();
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      width: double.infinity,
-      padding: const EdgeInsets.all(12),
-      decoration: BoxDecoration(
-        color: const Color(0xFFEFF6FF),
-        borderRadius: BorderRadius.circular(16),
-        border: Border.all(color: const Color(0xFFBFDBFE)),
-      ),
-      child: const Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          Icon(Icons.info_outline, color: Color(0xFF2563EB), size: 18),
-          SizedBox(width: 8),
-          Expanded(
-            child: Text(
-              'Mostrando recordatorios de demostración porque no se pudo cargar la API.',
-              style: TextStyle(
-                color: Color(0xFF1E3A8A),
-                fontSize: 11,
-                fontWeight: FontWeight.w600,
-                height: 1.35,
-              ),
-            ),
-          ),
         ],
       ),
     );
@@ -913,13 +760,6 @@ class _MedicationItem extends StatelessWidget {
               ],
             ),
           ),
-          if (recordatorio.isDemo) ...[
-            const SizedBox(width: 8),
-            const EcronoStatusBadge(
-              text: 'Demo',
-              status: EcronoStatusType.info,
-            ),
-          ],
         ],
       ),
     );

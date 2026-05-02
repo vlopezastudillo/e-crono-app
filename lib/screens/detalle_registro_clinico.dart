@@ -170,7 +170,7 @@ class DetalleRegistroClinico extends StatelessWidget {
             const EcronoCard(
               padding: EdgeInsets.all(AppTheme.spacingMd),
               child: Text(
-                'Estos rangos son referenciales para demo y no constituyen diagnóstico médico.',
+                'Estos rangos son referenciales y no constituyen diagnóstico médico.',
                 style: TextStyle(
                   fontSize: 12,
                   height: 1.35,

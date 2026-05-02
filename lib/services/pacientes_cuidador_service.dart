@@ -1,7 +1,6 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
+import 'package:shared_preferences/shared_preferences.dart';
 
 import '../api_constants.dart';
 import '../session_helper.dart';
@@ -9,68 +8,137 @@ import '../session_helper.dart';
 class PacientesCuidadorService {
   const PacientesCuidadorService();
 
+  static const String _pacientesOfflineKey = 'pacientes_cuidador_offline';
+
   Future<List<Map<String, String>>> cargarPacientesACargo() async {
     try {
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
       if (!headers.containsKey('Authorization')) {
-        return [];
+        return _cargarPacientesLocales();
       }
 
-      final response = await http.get(
+      final response = await SessionHelper.authenticatedGet(
         Uri.parse(apiCaregiverPatientsUrl),
-        headers: headers,
       );
 
-      debugPrint('GET pacientes cuidador: estado HTTP ${response.statusCode}');
-      debugPrint('GET pacientes cuidador: respuesta ${response.body}');
-
       if (response.statusCode != 200) {
-        return [];
+        return _cargarPacientesLocales();
       }
 
       final dynamic data = jsonDecode(response.body);
       final List<dynamic> items = _extraerItems(data);
 
-      if (items.isEmpty) {
-        debugPrint('GET pacientes cuidador: lista parseada []');
+      final List<Map<String, String>> pacientes = _deduplicarPacientes(
+        items
+            .whereType<Map<String, dynamic>>()
+            .map(_mapearPaciente)
+            .where((paciente) => !_esPacienteDemo(paciente))
+            .toList(),
+      );
+
+      await _guardarPacientesLocales(pacientes);
+      return pacientes;
+    } catch (_) {
+      return _cargarPacientesLocales();
+    }
+  }
+
+  static Future<void> _guardarPacientesLocales(
+    List<Map<String, String>> pacientes,
+  ) async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final Map<String, Map<String, String>> pacientesUnicos = {};
+
+      for (final Map<String, String> paciente in pacientes) {
+        final String? id =
+            paciente['patient_id'] ??
+            paciente['patientId'] ??
+            paciente['paciente_id'] ??
+            paciente['id'];
+
+        if (id == null || id.isEmpty) {
+          continue;
+        }
+
+        pacientesUnicos[id] = paciente;
+      }
+
+      await prefs.setString(
+        _pacientesOfflineKey,
+        jsonEncode(pacientesUnicos.values.toList()),
+      );
+    } catch (_) {
+      // La cache local no debe romper la carga online.
+    }
+  }
+
+  static Future<List<Map<String, String>>> _cargarPacientesLocales() async {
+    try {
+      final SharedPreferences prefs = await SharedPreferences.getInstance();
+      final String? pacientesJson = prefs.getString(_pacientesOfflineKey);
+
+      if (pacientesJson == null || pacientesJson.isEmpty) {
         return [];
       }
 
-      final List<Map<String, String>> pacientes = items
-          .whereType<Map<String, dynamic>>()
-          .map(_mapearPaciente)
-          .toList();
+      final dynamic data = jsonDecode(pacientesJson);
+      if (data is! List) {
+        return [];
+      }
 
-      debugPrint('GET pacientes cuidador: lista parseada $pacientes');
-      return pacientes;
-    } catch (error) {
-      debugPrint('GET pacientes cuidador: error $error');
+      return data
+          .whereType<Map>()
+          .map(
+            (item) => item.map(
+              (key, value) => MapEntry(key.toString(), value?.toString() ?? ''),
+            ),
+          )
+          .cast<Map<String, String>>()
+          .where((paciente) => !_esPacienteDemo(paciente))
+          .toList();
+    } catch (_) {
       return [];
     }
   }
 
-  List<Map<String, String>> obtenerPacientesDemo() {
-    return const [
-      {
-        'patient': 'María González',
-        'parentesco': 'Madre',
-        'es_principal': 'Sí',
-        'edad': '68 años',
-        'diagnostico': 'Hipertensión arterial',
-        'ultimo_control': '22/04/2026',
-        'estado': 'Control estable',
-      },
-      {
-        'patient': 'Juan Pérez',
-        'parentesco': 'Padre',
-        'es_principal': 'Sí',
-        'edad': '72 años',
-        'diagnostico': 'Diabetes mellitus tipo 2',
-        'ultimo_control': '18/04/2026',
-        'estado': 'Requiere seguimiento',
-      },
-    ];
+  static Future<List<Map<String, String>>> cargarPacientesLocales() {
+    return _cargarPacientesLocales();
+  }
+
+  static List<Map<String, String>> _deduplicarPacientes(
+    List<Map<String, String>> pacientes,
+  ) {
+    final Map<String, Map<String, String>> pacientesPorId = {};
+    final List<Map<String, String>> pacientesSinId = [];
+
+    for (final Map<String, String> paciente in pacientes) {
+      final String? id =
+          paciente['patient_id'] ??
+          paciente['patientId'] ??
+          paciente['paciente_id'] ??
+          paciente['id'];
+
+      if (id == null || id.isEmpty) {
+        pacientesSinId.add(paciente);
+        continue;
+      }
+
+      pacientesPorId[id] = paciente;
+    }
+
+    return [...pacientesPorId.values, ...pacientesSinId];
+  }
+
+  static bool _esPacienteDemo(Map<String, String> paciente) {
+    final String? rawPatientId =
+        paciente['patient_id'] ??
+        paciente['patientId'] ??
+        paciente['paciente_id'] ??
+        paciente['id'];
+    final int? patientId = int.tryParse(rawPatientId ?? '');
+    return patientId == 101 || patientId == 102;
   }
 
   static List<dynamic> _extraerItems(dynamic data) {
@@ -120,16 +188,32 @@ class PacientesCuidadorService {
   static Map<String, String> _mapearPaciente(Map<String, dynamic> paciente) {
     final dynamic patientData =
         paciente['patient'] ?? paciente['paciente'] ?? paciente['patient_data'];
-    final String? patientId = _leerPatientId(paciente, patientData);
+    final String patientId = _extraerPatientIdReal(paciente);
     final String patient = _leerNombrePaciente(
       paciente,
       patientData,
-      patientId,
+      patientId.isEmpty ? null : patientId,
     );
     final String patientLimpio = patient.replaceFirst(
       RegExp(r'^Paciente:\s*'),
       '',
     );
+    final String? relationId = _leerTexto(paciente['id']);
+    final String? userId = _leerUserId(paciente, patientData);
+    final String? nombre =
+        _leerTexto(paciente['nombre']) ??
+        _leerTexto(paciente['patient_name']) ??
+        _leerTexto(paciente['nombre_paciente']) ??
+        _leerTexto(patientData is Map ? patientData['nombre'] : null) ??
+        (patientLimpio.isEmpty ? null : patientLimpio);
+    final String? name =
+        _leerTexto(paciente['name']) ??
+        _leerTexto(patientData is Map ? patientData['name'] : null) ??
+        nombre;
+    final String? username =
+        _leerTexto(paciente['username']) ??
+        _leerTexto(patientData is Map ? patientData['username'] : null) ??
+        _leerUsernameDesdeUser(patientData);
 
     final String parentesco =
         _leerTexto(paciente['parentesco']) ??
@@ -144,6 +228,10 @@ class PacientesCuidadorService {
 
     final Map<String, String> pacienteParseado = {
       'patient': patientLimpio,
+      if (patientId.isNotEmpty) 'id': patientId,
+      if (patientId.isNotEmpty) 'patient_id': patientId,
+      if (patientId.isNotEmpty) 'patientId': patientId,
+      if (patientId.isNotEmpty) 'paciente_id': patientId,
       'parentesco': parentesco,
       'es_principal': esPrincipal,
       'edad':
@@ -164,34 +252,112 @@ class PacientesCuidadorService {
           'No disponible',
     };
 
-    if (patientId != null) {
-      pacienteParseado['patient_id'] = patientId;
+    if (relationId != null) {
+      pacienteParseado['caregiver_patient_id'] = relationId;
+    }
+
+    if (userId != null) {
+      pacienteParseado['user_id'] = userId;
+    }
+
+    if (nombre != null) {
+      pacienteParseado['nombre'] = nombre;
+    }
+
+    if (name != null) {
+      pacienteParseado['name'] = name;
+    }
+
+    if (username != null) {
+      pacienteParseado['username'] = username;
     }
 
     return pacienteParseado;
   }
 
-  static String? _leerTexto(dynamic valor) {
-    final String texto = valor?.toString().trim() ?? '';
-    return texto.isEmpty ? null : texto;
+  static String _extraerPatientIdReal(Map<String, dynamic> item) {
+    final dynamic patient =
+        item['patient'] ?? item['paciente'] ?? item['patient_data'];
+
+    if (patient is Map) {
+      final dynamic nestedId =
+          patient['id'] ??
+          patient['patient_id'] ??
+          patient['patientId'] ??
+          patient['paciente_id'] ??
+          patient['pacienteId'] ??
+          patient['pk'];
+
+      if (nestedId != null && nestedId.toString().trim().isNotEmpty) {
+        return nestedId.toString();
+      }
+    }
+
+    final dynamic directId =
+        item['patient_id'] ??
+        item['patientId'] ??
+        item['paciente_id'] ??
+        item['pacienteId'];
+
+    if (directId != null && directId.toString().trim().isNotEmpty) {
+      return directId.toString();
+    }
+
+    return item['id']?.toString() ?? '';
   }
 
-  static String? _leerPatientId(
+  static String? _leerUserId(
     Map<String, dynamic> paciente,
     dynamic patientData,
   ) {
-    if (patientData is Map<String, dynamic>) {
-      return _leerTexto(patientData['id']) ??
-          _leerTexto(patientData['patient_id']) ??
-          _leerTexto(patientData['pk']);
+    if (patientData is Map) {
+      final dynamic user = patientData['user'];
+      if (user is Map) {
+        final String? idDesdeUser =
+            _leerTexto(user['id']) ??
+            _leerTexto(user['user_id']) ??
+            _leerTexto(user['pk']);
+        if (idDesdeUser != null) {
+          return idDesdeUser;
+        }
+      }
+
+      final String? idDesdePaciente =
+          _leerTexto(patientData['user_id']) ??
+          _leerTexto(patientData['userId']);
+      if (idDesdePaciente != null) {
+        return idDesdePaciente;
+      }
     }
 
-    return _leerTexto(paciente['patient_id']) ??
-        _leerTexto(paciente['patientId']) ??
-        _leerTexto(paciente['paciente_id']) ??
-        _leerTexto(paciente['pacienteId']) ??
-        _leerTexto(paciente['patient']) ??
-        _leerTexto(paciente['paciente']);
+    final dynamic user = paciente['user'];
+    if (user is Map) {
+      return _leerTexto(user['id']) ??
+          _leerTexto(user['user_id']) ??
+          _leerTexto(user['pk']);
+    }
+
+    return _leerTexto(paciente['user_id']) ?? _leerTexto(paciente['userId']);
+  }
+
+  static String? _leerUsernameDesdeUser(dynamic patientData) {
+    if (patientData is! Map) {
+      return null;
+    }
+
+    final dynamic user = patientData['user'];
+    if (user is! Map) {
+      return null;
+    }
+
+    return _leerTexto(user['username']) ??
+        _leerTexto(user['name']) ??
+        _leerTexto(user['full_name']);
+  }
+
+  static String? _leerTexto(dynamic valor) {
+    final String texto = valor?.toString().trim() ?? '';
+    return texto.isEmpty ? null : texto;
   }
 
   static String _leerNombrePaciente(

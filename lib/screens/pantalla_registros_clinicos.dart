@@ -1,12 +1,10 @@
 import 'dart:convert';
 
 import 'package:flutter/material.dart';
-import 'package:http/http.dart' as http;
 
 import '../api_constants.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
-import '../widgets/ecrono_ui.dart';
 
 const Color _clinicalBackground = Color(0xFFF3F4F6);
 const Color _clinicalHeaderBlue = Color(0xFF0A2B4E);
@@ -37,11 +35,9 @@ class _PantallaRegistrosClinicosState extends State<PantallaRegistrosClinicos> {
 
   Future<List<Map<String, String>>> _cargarRegistros() async {
     try {
-      // Envia Authorization: Token <token> cuando hay login real guardado.
-      final Map<String, String> headers = await SessionHelper.getAuthHeaders();
-      final response = await http.get(
+      // Envia Authorization cuando hay login real guardado.
+      final response = await SessionHelper.authenticatedGet(
         Uri.parse(apiVitalSignRecordsUrl),
-        headers: headers,
       );
 
       if (response.statusCode != 200) {
@@ -101,39 +97,8 @@ class _PantallaRegistrosClinicosState extends State<PantallaRegistrosClinicos> {
         };
       }).toList();
     } catch (_) {
-      // Si falla la API, no se rompe el flujo demo.
       return [];
     }
-  }
-
-  // Lista local de apoyo para mostrar una demo si la API no trae datos.
-  List<Map<String, String>> _obtenerRegistrosDemo() {
-    return const [
-      {
-        'fecha': '24/04/2026',
-        'patient': 'María González',
-        'presion_sistolica': '124',
-        'presion_diastolica': '78',
-        'frecuencia_cardiaca': '73',
-        'observaciones': 'Control estable, continuar tratamiento habitual.',
-      },
-      {
-        'fecha': '21/04/2026',
-        'patient': 'Juan Pérez',
-        'presion_sistolica': '136',
-        'presion_diastolica': '84',
-        'frecuencia_cardiaca': '82',
-        'observaciones': 'Requiere seguimiento por cifras elevadas.',
-      },
-      {
-        'fecha': '18/04/2026',
-        'patient': 'María González',
-        'presion_sistolica': '120',
-        'presion_diastolica': '76',
-        'frecuencia_cardiaca': '71',
-        'observaciones': 'Sin síntomas de alarma reportados.',
-      },
-    ];
   }
 
   @override
@@ -163,38 +128,54 @@ class _PantallaRegistrosClinicosState extends State<PantallaRegistrosClinicos> {
             }
 
             final registrosReales = snapshot.data!;
-            final bool usandoDatosDemo = registrosReales.isEmpty;
-            final registros = usandoDatosDemo
-                ? _obtenerRegistrosDemo()
-                : registrosReales;
+            final registros = registrosReales;
 
             return Column(
               children: [
-                if (usandoDatosDemo)
-                  const _DemoNotice(
-                    message:
-                        'Mostrando datos demo porque la API no devolvió registros clínicos.',
-                  ),
                 Expanded(
-                  child: ListView.separated(
-                    padding: const EdgeInsets.all(16),
-                    itemCount: registros.length,
-                    separatorBuilder: (context, index) =>
-                        const SizedBox(height: 16),
-                    itemBuilder: (context, index) {
-                      final registro = registros[index];
+                  child: registros.isEmpty
+                      ? const _EmptyRecordsState()
+                      : ListView.separated(
+                          padding: const EdgeInsets.all(16),
+                          itemCount: registros.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 16),
+                          itemBuilder: (context, index) {
+                            final registro = registros[index];
 
-                      return _VitalRecordCard(
-                        registro: registro,
-                        showPatient: true,
-                        isDemo: usandoDatosDemo,
-                      );
-                    },
-                  ),
+                            return _VitalRecordCard(
+                              registro: registro,
+                              showPatient: true,
+                            );
+                          },
+                        ),
                 ),
               ],
             );
           },
+        ),
+      ),
+    );
+  }
+}
+
+class _EmptyRecordsState extends StatelessWidget {
+  const _EmptyRecordsState();
+
+  @override
+  Widget build(BuildContext context) {
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(AppTheme.spacingLg),
+        child: Text(
+          'No hay datos disponibles',
+          textAlign: TextAlign.center,
+          style: TextStyle(
+            fontSize: 16,
+            height: 1.35,
+            color: _clinicalTextSecondary,
+            fontWeight: FontWeight.w700,
+          ),
         ),
       ),
     );
@@ -275,49 +256,6 @@ class _ScreenError extends StatelessWidget {
   }
 }
 
-class _DemoNotice extends StatelessWidget {
-  const _DemoNotice({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppTheme.spacingLg,
-        AppTheme.spacingLg,
-        AppTheme.spacingLg,
-        0,
-      ),
-      child: Container(
-        padding: const EdgeInsets.all(16),
-        decoration: BoxDecoration(
-          color: Colors.white,
-          borderRadius: BorderRadius.circular(16),
-          border: Border.all(color: _clinicalBorder),
-        ),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.info, color: _clinicalHeaderBlue),
-            const SizedBox(width: AppTheme.spacingSm),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(
-                  fontSize: 15,
-                  height: 1.35,
-                  color: _clinicalTextPrimary,
-                ),
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
 class _RecordDataRow extends StatelessWidget {
   const _RecordDataRow({
     required this.icon,
@@ -352,15 +290,10 @@ class _RecordDataRow extends StatelessWidget {
 }
 
 class _VitalRecordCard extends StatelessWidget {
-  const _VitalRecordCard({
-    required this.registro,
-    this.showPatient = true,
-    this.isDemo = false,
-  });
+  const _VitalRecordCard({required this.registro, this.showPatient = true});
 
   final Map<String, String> registro;
   final bool showPatient;
-  final bool isDemo;
 
   @override
   Widget build(BuildContext context) {
@@ -423,11 +356,6 @@ class _VitalRecordCard extends StatelessWidget {
                   ],
                 ),
               ),
-              if (isDemo)
-                const EcronoStatusBadge(
-                  text: 'Demo',
-                  status: EcronoStatusType.info,
-                ),
             ],
           ),
           const SizedBox(height: AppTheme.spacingMd),

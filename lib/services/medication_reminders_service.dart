@@ -1,8 +1,5 @@
 import 'dart:convert';
 
-import 'package:flutter/foundation.dart';
-import 'package:http/http.dart' as http;
-
 import '../api_constants.dart';
 import '../session_helper.dart';
 
@@ -16,7 +13,6 @@ class MedicationReminder {
     this.id,
     this.patient,
     this.patientId,
-    this.isDemo = false,
   });
 
   final String? id;
@@ -27,17 +23,12 @@ class MedicationReminder {
   final String hora;
   final String frecuencia;
   final bool activo;
-  final bool isDemo;
 }
 
 class MedicationRemindersResult {
-  const MedicationRemindersResult({
-    required this.recordatorios,
-    required this.usandoDemo,
-  });
+  const MedicationRemindersResult({required this.recordatorios});
 
   final List<MedicationReminder> recordatorios;
-  final bool usandoDemo;
 }
 
 class MedicationRemindersService {
@@ -66,16 +57,10 @@ class MedicationRemindersService {
     };
 
     try {
-      final response = await http.post(
+      final response = await SessionHelper.authenticatedPost(
         Uri.parse(apiMedicationRemindersUrl),
-        headers: headers,
         body: jsonEncode(body),
       );
-
-      debugPrint(
-        'POST recordatorio medicamento: estado HTTP ${response.statusCode}',
-      );
-      debugPrint('POST recordatorio medicamento: respuesta ${response.body}');
 
       if (response.statusCode == 201) {
         return;
@@ -103,8 +88,7 @@ class MedicationRemindersService {
       );
     } on MedicationReminderCreateException {
       rethrow;
-    } catch (error) {
-      debugPrint('POST recordatorio medicamento: error $error');
+    } catch (_) {
       throw const MedicationReminderCreateException(
         'No se pudo conectar con el servidor.',
       );
@@ -116,21 +100,15 @@ class MedicationRemindersService {
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
       if (!headers.containsKey('Authorization')) {
-        return _resultadoDemo();
+        return _resultadoVacio();
       }
 
-      final response = await http.get(
+      final response = await SessionHelper.authenticatedGet(
         Uri.parse(apiMedicationRemindersUrl),
-        headers: headers,
       );
-
-      debugPrint(
-        'GET recordatorios medicamentos: estado HTTP ${response.statusCode}',
-      );
-      debugPrint('GET recordatorios medicamentos: respuesta ${response.body}');
 
       if (response.statusCode != 200) {
-        return _resultadoDemo();
+        return _resultadoVacio();
       }
 
       final dynamic data = jsonDecode(response.body);
@@ -140,40 +118,14 @@ class MedicationRemindersService {
           .map(_mapearRecordatorio)
           .toList();
 
-      return MedicationRemindersResult(
-        recordatorios: recordatorios,
-        usandoDemo: false,
-      );
-    } catch (error) {
-      debugPrint('GET recordatorios medicamentos: error $error');
-      return _resultadoDemo();
+      return MedicationRemindersResult(recordatorios: recordatorios);
+    } catch (_) {
+      return _resultadoVacio();
     }
   }
 
-  MedicationRemindersResult _resultadoDemo() {
-    return const MedicationRemindersResult(
-      usandoDemo: true,
-      recordatorios: [
-        MedicationReminder(
-          id: 'demo-1',
-          nombreMedicamento: 'Enalapril',
-          dosis: '10 mg',
-          hora: '08:00',
-          frecuencia: 'Diaria',
-          activo: true,
-          isDemo: true,
-        ),
-        MedicationReminder(
-          id: 'demo-2',
-          nombreMedicamento: 'Metformina',
-          dosis: '850 mg',
-          hora: '13:00',
-          frecuencia: 'Diaria',
-          activo: true,
-          isDemo: true,
-        ),
-      ],
-    );
+  MedicationRemindersResult _resultadoVacio() {
+    return const MedicationRemindersResult(recordatorios: []);
   }
 
   static List<dynamic> _extraerItems(dynamic data) {

@@ -211,7 +211,7 @@ class _PantallaAgregarRecordatorioMedicamentoState
                     EcronoTextField(
                       controller: _nombreController,
                       label: 'Nombre medicamento',
-                      hint: 'Ej: Enalapril',
+                      hint: 'Ej: nombre del medicamento',
                       icon: Icons.medication_outlined,
                     ),
                     const SizedBox(height: AppTheme.spacingMd),

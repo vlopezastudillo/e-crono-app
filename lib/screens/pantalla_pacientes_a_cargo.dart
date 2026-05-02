@@ -31,11 +31,6 @@ class _PantallaPacientesACargoState extends State<PantallaPacientesACargo> {
     _pacientesFuture = _pacientesService.cargarPacientesACargo();
   }
 
-  // Lista local de apoyo para mostrar una demo si la API no trae datos.
-  List<Map<String, String>> _obtenerPacientesDemo() {
-    return _pacientesService.obtenerPacientesDemo();
-  }
-
   EcronoStatusType _obtenerTipoEstadoPaciente(String estado) {
     final estadoNormalizado = estado.toLowerCase();
 
@@ -139,109 +134,86 @@ class _PantallaPacientesACargoState extends State<PantallaPacientesACargo> {
             }
 
             final pacientesReales = snapshot.data!;
-            final bool usandoDatosDemo = pacientesReales.isEmpty;
-            final pacientes = usandoDatosDemo
-                ? _obtenerPacientesDemo()
-                : pacientesReales;
+            final pacientes = pacientesReales;
 
             return Column(
               children: [
-                if (usandoDatosDemo)
-                  const _DemoNotice(
-                    message:
-                        'Mostrando datos demo porque la API no devolvió pacientes asociados.',
-                  ),
                 Expanded(
-                  child: ListView.separated(
-                    padding: const EdgeInsets.all(AppTheme.spacingMd),
-                    itemCount: pacientes.length,
-                    separatorBuilder: (context, index) =>
-                        const SizedBox(height: 12),
-                    itemBuilder: (context, index) {
-                      final paciente = pacientes[index];
-                      final String estadoPaciente =
-                          paciente['estado'] ?? 'No disponible';
-                      final EcronoStatusType tipoEstado =
-                          _obtenerTipoEstadoPaciente(estadoPaciente);
+                  child: pacientes.isEmpty
+                      ? const _EmptyPatientsState()
+                      : ListView.separated(
+                          padding: const EdgeInsets.all(AppTheme.spacingMd),
+                          itemCount: pacientes.length,
+                          separatorBuilder: (context, index) =>
+                              const SizedBox(height: 12),
+                          itemBuilder: (context, index) {
+                            final paciente = pacientes[index];
+                            final String estadoPaciente =
+                                paciente['estado'] ?? 'No disponible';
+                            final EcronoStatusType tipoEstado =
+                                _obtenerTipoEstadoPaciente(estadoPaciente);
 
-                      return _ClinicalListCard(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 14,
-                          vertical: 12,
-                        ),
-                        child: Column(
-                          crossAxisAlignment: CrossAxisAlignment.start,
-                          children: [
-                            Row(
-                              crossAxisAlignment: CrossAxisAlignment.start,
-                              children: [
-                                const Icon(
-                                  Icons.person,
-                                  color: _clinicalHeaderBlue,
-                                  size: 24,
-                                ),
-                                const SizedBox(width: AppTheme.spacingSm),
-                                Expanded(
-                                  child: Text(
-                                    _leerNombrePaciente(paciente),
-                                    style: const TextStyle(
-                                      fontSize: 17,
-                                      fontWeight: FontWeight.w700,
-                                      color: _clinicalTextPrimary,
-                                      height: 1.25,
-                                    ),
+                            return _ClinicalListCard(
+                              padding: const EdgeInsets.symmetric(
+                                horizontal: 14,
+                                vertical: 12,
+                              ),
+                              child: Column(
+                                crossAxisAlignment: CrossAxisAlignment.start,
+                                children: [
+                                  Row(
+                                    crossAxisAlignment:
+                                        CrossAxisAlignment.start,
+                                    children: [
+                                      const Icon(
+                                        Icons.person,
+                                        color: _clinicalHeaderBlue,
+                                        size: 24,
+                                      ),
+                                      const SizedBox(width: AppTheme.spacingSm),
+                                      Expanded(
+                                        child: Text(
+                                          _leerNombrePaciente(paciente),
+                                          style: const TextStyle(
+                                            fontSize: 17,
+                                            fontWeight: FontWeight.w700,
+                                            color: _clinicalTextPrimary,
+                                            height: 1.25,
+                                          ),
+                                        ),
+                                      ),
+                                      EcronoStatusBadge(
+                                        text: _obtenerTextoEstadoPaciente(
+                                          estadoPaciente,
+                                        ),
+                                        status: tipoEstado,
+                                      ),
+                                    ],
                                   ),
-                                ),
-                                EcronoStatusBadge(
-                                  text: _obtenerTextoEstadoPaciente(
-                                    estadoPaciente,
+                                  const SizedBox(height: AppTheme.spacingSm),
+                                  _RecordDataRow(
+                                    icon: Icons.family_restroom,
+                                    text:
+                                        'Parentesco: ${paciente['parentesco']}',
                                   ),
-                                  status: tipoEstado,
-                                ),
-                              ],
-                            ),
-                            const SizedBox(height: AppTheme.spacingSm),
-                            if (usandoDatosDemo) ...[
-                              _RecordDataRow(
-                                icon: Icons.cake,
-                                text: 'Edad: ${paciente['edad']}',
+                                  const SizedBox(height: 6),
+                                  _RecordDataRow(
+                                    icon: Icons.verified_user,
+                                    text:
+                                        'Cuidador principal: ${paciente['es_principal']}',
+                                  ),
+                                  const SizedBox(height: 10),
+                                  _PatientCardActions(
+                                    onRegistrar: () =>
+                                        _registrarControl(context, paciente),
+                                    onVerRegistros: () =>
+                                        _verRegistros(context, paciente),
+                                  ),
+                                ],
                               ),
-                              const SizedBox(height: 6),
-                              _RecordDataRow(
-                                icon: Icons.medical_information,
-                                text:
-                                    'Diagnóstico principal: ${paciente['diagnostico']}',
-                              ),
-                              const SizedBox(height: 6),
-                              _RecordDataRow(
-                                icon: Icons.event_available,
-                                text:
-                                    'Último control: ${paciente['ultimo_control']}',
-                              ),
-                              const SizedBox(height: 6),
-                            ],
-                            _RecordDataRow(
-                              icon: Icons.family_restroom,
-                              text: 'Parentesco: ${paciente['parentesco']}',
-                            ),
-                            const SizedBox(height: 6),
-                            _RecordDataRow(
-                              icon: Icons.verified_user,
-                              text:
-                                  'Cuidador principal: ${paciente['es_principal']}',
-                            ),
-                            const SizedBox(height: 10),
-                            _PatientCardActions(
-                              onRegistrar: () =>
-                                  _registrarControl(context, paciente),
-                              onVerRegistros: () =>
-                                  _verRegistros(context, paciente),
-                            ),
-                          ],
+                            );
+                          },
                         ),
-                      );
-                    },
-                  ),
                 ),
               ],
             );
@@ -433,37 +405,25 @@ class _ScreenError extends StatelessWidget {
   }
 }
 
-class _DemoNotice extends StatelessWidget {
-  const _DemoNotice({required this.message});
-
-  final String message;
+class _EmptyPatientsState extends StatelessWidget {
+  const _EmptyPatientsState();
 
   @override
   Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppTheme.spacingMd,
-        AppTheme.spacingMd,
-        AppTheme.spacingMd,
-        0,
-      ),
-      child: _ClinicalListCard(
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.info, color: _clinicalHeaderBlue),
-            const SizedBox(width: AppTheme.spacingSm),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(
-                  fontSize: 12,
-                  height: 1.35,
-                  color: _clinicalTextSecondary,
-                ),
-              ),
+    return const Center(
+      child: Padding(
+        padding: EdgeInsets.all(AppTheme.spacingLg),
+        child: _ClinicalListCard(
+          child: Text(
+            'No hay datos disponibles',
+            textAlign: TextAlign.center,
+            style: TextStyle(
+              fontSize: 14,
+              height: 1.35,
+              color: _clinicalTextPrimary,
+              fontWeight: FontWeight.w700,
             ),
-          ],
+          ),
         ),
       ),
     );

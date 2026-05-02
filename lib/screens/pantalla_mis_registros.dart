@@ -1,6 +1,11 @@
+import 'dart:convert';
+
 import 'package:flutter/material.dart';
 
+import '../api_constants.dart';
 import '../route_observer.dart';
+import '../services/offline_vital_signs_service.dart';
+import '../services/pacientes_cuidador_service.dart';
 import '../services/registros_clinicos_service.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
@@ -35,14 +40,13 @@ class PantallaMisRegistros extends StatefulWidget {
 
 class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
     with RouteAware {
-  final RegistrosClinicosService _registrosService =
-      const RegistrosClinicosService();
   late Future<List<Map<String, String>>> _registrosFuture;
   String? _role;
   String? _pacienteSeleccionadoFiltro;
   RegistroClinicoSemaforo? _estadoSeleccionadoFiltro;
   DateTime? _fechaFiltro;
   bool _suscritoARuta = false;
+  bool _autoSyncEjecutado = false;
 
   @override
   void initState() {
@@ -50,6 +54,7 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
     // Carga la lista completa salvo cuando otra pantalla ya entrega un filtro.
     _registrosFuture = _cargarRegistrosIniciales();
     _cargarRolUsuario();
+    _intentarAutoSincronizacion();
   }
 
   @override
@@ -81,15 +86,120 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
     });
   }
 
-  Future<List<Map<String, String>>> _cargarRegistrosIniciales() {
-    final List<Map<String, String>>? registrosFiltrados =
-        widget.registrosFiltrados;
-
-    if (registrosFiltrados != null) {
-      return Future.value(registrosFiltrados);
+  Future<void> _intentarAutoSincronizacion() async {
+    if (_autoSyncEjecutado) {
+      return;
     }
 
-    return _registrosService.cargarMisRegistros();
+    _autoSyncEjecutado = true;
+
+    final List<Map<String, dynamic>> registrosPendientes =
+        await OfflineVitalSignsService.obtenerRegistrosPendientes();
+
+    if (registrosPendientes.isEmpty) {
+      return;
+    }
+
+    bool huboFallas = false;
+    bool intentoSincronizar = false;
+
+    for (final Map<String, dynamic> registro in registrosPendientes) {
+      if (registro['is_demo'] == 'true') {
+        continue;
+      }
+
+      final String? localId = _leerTexto(registro['local_id']);
+      if (localId == null) {
+        huboFallas = true;
+        continue;
+      }
+
+      intentoSincronizar = true;
+      final bool sincronizado = await _sincronizarRegistroPendiente(registro);
+      if (!sincronizado) {
+        huboFallas = true;
+        continue;
+      }
+
+      final bool eliminado =
+          await OfflineVitalSignsService.eliminarRegistroPendiente(localId);
+      if (!eliminado) {
+        huboFallas = true;
+      }
+    }
+
+    if (!mounted) {
+      return;
+    }
+
+    setState(() {
+      _registrosFuture = _cargarRegistrosIniciales();
+    });
+
+    if (intentoSincronizar && !huboFallas) {
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Registros sincronizados automáticamente.'),
+        ),
+      );
+    }
+  }
+
+  Future<bool> _sincronizarRegistroPendiente(
+    Map<String, dynamic> registroPendiente,
+  ) async {
+    try {
+      final Map<String, dynamic> datosRegistro =
+          _prepararRegistroPendienteParaBackend(registroPendiente);
+
+      final response = await SessionHelper.authenticatedPost(
+        Uri.parse(apiVitalSignRecordsUrl),
+        body: jsonEncode(datosRegistro),
+      );
+
+      return response.statusCode >= 200 && response.statusCode < 300;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  Map<String, dynamic> _prepararRegistroPendienteParaBackend(
+    Map<String, dynamic> registroPendiente,
+  ) {
+    final Map<String, dynamic> datosRegistro = Map<String, dynamic>.from(
+      registroPendiente,
+    );
+    datosRegistro.remove('local_id');
+    datosRegistro.remove('created_at_local');
+    datosRegistro.remove('sync_status');
+    datosRegistro.remove('estado_sincronizacion');
+    datosRegistro.remove('is_demo');
+    return datosRegistro;
+  }
+
+  Future<List<Map<String, String>>> _cargarRegistrosIniciales() async {
+    final List<Map<String, String>>? registrosFiltrados =
+        widget.registrosFiltrados;
+    final Map<String, Map<String, String>> pacientesPorId =
+        await _cargarPacientesLocalesPorId();
+
+    if (registrosFiltrados != null) {
+      final List<Map<String, String>> registrosPendientes =
+          await _cargarRegistrosPendientesCompatibles(pacientesPorId);
+
+      return _prepararRegistrosParaVista([
+        ..._filtrarRegistrosPendientesParaVista(registrosPendientes),
+        ...registrosFiltrados,
+      ], pacientesPorId);
+    }
+
+    final List<Map<String, dynamic>> registrosConsolidados =
+        await RegistrosClinicosService.obtenerRegistrosConsolidados();
+
+    return _prepararRegistrosParaVista(
+      registrosConsolidados.map(_mapearRegistroConsolidadoParaVista).toList(),
+      pacientesPorId,
+    );
   }
 
   Future<void> _cargarRolUsuario() async {
@@ -104,9 +214,320 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
     });
   }
 
-  // Lista local de apoyo para mostrar una demo si la API no trae datos.
-  List<Map<String, String>> _obtenerRegistrosDemo() {
-    return _registrosService.obtenerRegistrosDemoPaciente();
+  Future<Map<String, Map<String, String>>>
+  _cargarPacientesLocalesPorId() async {
+    final List<Map<String, String>> pacientes =
+        await PacientesCuidadorService.cargarPacientesLocales();
+    final Map<String, Map<String, String>> pacientesPorId = {};
+
+    for (final Map<String, String> paciente in pacientes) {
+      _registrarPacienteEnMapa(pacientesPorId, paciente['id'], paciente);
+      _registrarPacienteEnMapa(
+        pacientesPorId,
+        paciente['patient_id'],
+        paciente,
+      );
+      _registrarPacienteEnMapa(pacientesPorId, paciente['patientId'], paciente);
+      _registrarPacienteEnMapa(
+        pacientesPorId,
+        paciente['paciente_id'],
+        paciente,
+      );
+    }
+
+    return pacientesPorId;
+  }
+
+  void _registrarPacienteEnMapa(
+    Map<String, Map<String, String>> pacientesPorId,
+    String? id,
+    Map<String, String> paciente,
+  ) {
+    final String idLimpio = id?.trim() ?? '';
+    if (idLimpio.isEmpty) {
+      return;
+    }
+
+    pacientesPorId[idLimpio] = paciente;
+  }
+
+  Future<List<Map<String, String>>> _cargarRegistrosPendientesCompatibles(
+    Map<String, Map<String, String>> pacientesPorId,
+  ) async {
+    final List<Map<String, dynamic>> registrosPendientes =
+        await OfflineVitalSignsService.obtenerRegistrosPendientes();
+    final List<Map<String, String>> registrosCompatibles = registrosPendientes
+        .map((registro) => _mapearRegistroPendiente(registro, pacientesPorId))
+        .where((registro) => !_esRegistroDemo(registro))
+        .toList();
+
+    return registrosCompatibles;
+  }
+
+  List<Map<String, String>> _prepararRegistrosParaVista(
+    List<Map<String, String>> registros,
+    Map<String, Map<String, String>> pacientesPorId,
+  ) {
+    final List<Map<String, String>> registrosConNombre = registros
+        .where((registro) => !_esRegistroDemo(registro))
+        .map((registro) => _resolverNombrePaciente(registro, pacientesPorId))
+        .toList();
+
+    return _ordenarRegistrosPorFechaDescendente(
+      _deduplicarRegistros(registrosConNombre),
+    );
+  }
+
+  List<Map<String, String>> _ordenarRegistrosPorFechaDescendente(
+    List<Map<String, String>> registros,
+  ) {
+    final List<Map<String, String>> registrosOrdenados = [...registros];
+
+    registrosOrdenados.sort((a, b) {
+      final DateTime? fechaA = RegistrosClinicosService.leerFechaRegistro(a);
+      final DateTime? fechaB = RegistrosClinicosService.leerFechaRegistro(b);
+
+      if (fechaA == null && fechaB == null) {
+        return 0;
+      }
+
+      if (fechaA == null) {
+        return 1;
+      }
+
+      if (fechaB == null) {
+        return -1;
+      }
+
+      return fechaB.compareTo(fechaA);
+    });
+
+    return registrosOrdenados;
+  }
+
+  List<Map<String, String>> _filtrarRegistrosPendientesParaVista(
+    List<Map<String, String>> registrosPendientes,
+  ) {
+    final DateTime? fechaFiltrada = widget.fechaFiltrada;
+    final int? patientId = widget.patientId;
+
+    return registrosPendientes.where((registro) {
+      final bool coincidePaciente =
+          patientId == null ||
+          _registroPerteneceAlPaciente(
+            registro,
+            patientId.toString(),
+            widget.patientName,
+          );
+      final DateTime? fechaRegistro =
+          RegistrosClinicosService.leerFechaRegistro(registro);
+      final bool coincideFecha =
+          fechaFiltrada == null ||
+          (fechaRegistro != null && _mismoDia(fechaRegistro, fechaFiltrada));
+
+      return coincidePaciente && coincideFecha;
+    }).toList();
+  }
+
+  Map<String, String> _mapearRegistroConsolidadoParaVista(
+    Map<String, dynamic> registro,
+  ) {
+    final Map<String, String> registroMapeado = registro.map(
+      (key, value) => MapEntry(key.toString(), value?.toString() ?? ''),
+    );
+    final String patientId = _extraerPatientIdRegistro(registro);
+
+    if (patientId.isEmpty) {
+      return registroMapeado;
+    }
+
+    return {
+      ...registroMapeado,
+      'patient_id_normalizado': patientId,
+      if (_leerTexto(registroMapeado['patient_id']) == null)
+        'patient_id': patientId,
+      if (_leerTexto(registroMapeado['paciente_id']) == null)
+        'paciente_id': patientId,
+    };
+  }
+
+  Map<String, String> _mapearRegistroPendiente(
+    Map<String, dynamic> registroPendiente,
+    Map<String, Map<String, String>> pacientesPorId,
+  ) {
+    final String patientIdExtraido = _extraerPatientIdRegistro(
+      registroPendiente,
+    );
+    final String patientId = patientIdExtraido.isEmpty
+        ? '1'
+        : patientIdExtraido;
+    final String fechaOriginal =
+        _leerTexto(registroPendiente['created_at_local']) ??
+        DateTime.now().toIso8601String();
+    final String? patientName = widget.patientId?.toString() == patientId
+        ? widget.patientName?.trim()
+        : _nombrePacienteDesdeCache(patientId, pacientesPorId);
+
+    return {
+      'local_id': _leerTexto(registroPendiente['local_id']) ?? '',
+      'patient': (patientName == null || patientName.isEmpty)
+          ? patientId
+          : patientName,
+      'patient_id': patientId,
+      'paciente_id': patientId,
+      'patient_id_normalizado': patientId,
+      'fecha': _formatearFechaLocal(fechaOriginal),
+      'fecha_original': fechaOriginal,
+      'presion_sistolica':
+          _leerTexto(registroPendiente['presion_sistolica']) ?? 'No disponible',
+      'presion_diastolica':
+          _leerTexto(registroPendiente['presion_diastolica']) ??
+          'No disponible',
+      'frecuencia_cardiaca':
+          _leerTexto(registroPendiente['frecuencia_cardiaca']) ??
+          'No informado',
+      'glucosa': _leerTexto(registroPendiente['glucosa']) ?? 'No informado',
+      'observaciones':
+          _leerTexto(registroPendiente['observaciones']) ?? 'Sin observaciones',
+      'sync_status': 'pending',
+      'estado_sincronizacion': 'Pendiente de sincronizar',
+    };
+  }
+
+  Map<String, String> _resolverNombrePaciente(
+    Map<String, String> registro,
+    Map<String, Map<String, String>> pacientesPorId,
+  ) {
+    final String? nombreDirecto =
+        _leerTexto(registro['patient_name']) ??
+        _leerTexto(registro['paciente_nombre']) ??
+        _leerTexto(registro['nombre_paciente']);
+
+    if (nombreDirecto != null) {
+      return {...registro, 'patient': nombreDirecto};
+    }
+
+    final String? patientActual = _leerTexto(registro['patient']);
+    final bool patientActualPareceId =
+        patientActual != null &&
+        int.tryParse(patientActual.replaceFirst('Paciente: ', '')) != null;
+
+    if (patientActual != null && !patientActualPareceId) {
+      return registro;
+    }
+
+    final String? patientId =
+        _leerTexto(registro['patient_id_normalizado']) ??
+        _leerTexto(registro['patient_id']) ??
+        _leerTexto(registro['patientId']) ??
+        _leerTexto(registro['paciente_id']) ??
+        patientActual?.replaceFirst('Paciente: ', '');
+
+    final String? nombreDesdeCache = _nombrePacienteDesdeCache(
+      patientId,
+      pacientesPorId,
+    );
+
+    if (nombreDesdeCache == null) {
+      return {
+        ...registro,
+        'patient': 'Paciente: ${patientId ?? 'sin identificar'}',
+      };
+    }
+
+    return {...registro, 'patient': nombreDesdeCache};
+  }
+
+  String? _nombrePacienteDesdeCache(
+    String? patientId,
+    Map<String, Map<String, String>> pacientesPorId,
+  ) {
+    final String idLimpio = patientId?.trim() ?? '';
+    if (idLimpio.isEmpty) {
+      return null;
+    }
+
+    final Map<String, String>? paciente = pacientesPorId[idLimpio];
+    if (paciente == null) {
+      return null;
+    }
+
+    return _leerTexto(paciente['patient']) ??
+        _leerTexto(paciente['nombre']) ??
+        _leerTexto(paciente['name']) ??
+        _leerTexto(paciente['full_name']) ??
+        _leerTexto(paciente['username']);
+  }
+
+  List<Map<String, String>> _deduplicarRegistros(
+    List<Map<String, String>> registros,
+  ) {
+    final Map<String, Map<String, String>> registrosPorClave = {};
+
+    for (final Map<String, String> registro in registros) {
+      registrosPorClave[_claveRegistro(registro)] = registro;
+    }
+
+    return registrosPorClave.values.toList();
+  }
+
+  String _claveRegistro(Map<String, String> registro) {
+    final String? id =
+        _leerTexto(registro['id']) ??
+        _leerTexto(registro['registro_id']) ??
+        _leerTexto(registro['pk']);
+
+    if (id != null) {
+      return 'id:$id';
+    }
+
+    return [
+      _leerTexto(registro['patient_id_normalizado']) ??
+          _leerTexto(registro['patient_id']) ??
+          _leerTexto(registro['patientId']) ??
+          _leerTexto(registro['paciente_id']) ??
+          _leerTexto(registro['patient']) ??
+          '',
+      _leerTexto(registro['fecha_original']) ??
+          _leerTexto(registro['fecha']) ??
+          '',
+      _leerTexto(registro['presion_sistolica']) ?? '',
+      _leerTexto(registro['presion_diastolica']) ?? '',
+      _leerTexto(registro['glucosa']) ?? '',
+      _leerTexto(registro['frecuencia_cardiaca']) ?? '',
+    ].join('|');
+  }
+
+  bool _esRegistroDemo(Map<String, String> registro) {
+    final String? rawPatientId =
+        _leerTexto(registro['patient_id_normalizado']) ??
+        _leerTexto(registro['patient_id']) ??
+        _leerTexto(registro['patientId']) ??
+        _leerTexto(registro['paciente_id']) ??
+        _leerTexto(registro['patient']);
+    final int? patientId = int.tryParse(
+      rawPatientId?.replaceFirst('Paciente: ', '') ?? '',
+    );
+    return patientId == 101 || patientId == 102;
+  }
+
+  String _formatearFechaLocal(String fechaOriginal) {
+    try {
+      final DateTime fechaLocal = DateTime.parse(fechaOriginal).toLocal();
+      final String dia = fechaLocal.day.toString().padLeft(2, '0');
+      final String mes = fechaLocal.month.toString().padLeft(2, '0');
+      final String hora = fechaLocal.hour.toString().padLeft(2, '0');
+      final String minuto = fechaLocal.minute.toString().padLeft(2, '0');
+
+      return '$dia-$mes-${fechaLocal.year} $hora:$minuto';
+    } catch (_) {
+      return fechaOriginal;
+    }
+  }
+
+  String? _leerTexto(dynamic valor) {
+    final String texto = valor?.toString().trim() ?? '';
+    return texto.isEmpty ? null : texto;
   }
 
   List<Map<String, String>> _filtrarRegistrosPorPaciente(
@@ -119,9 +540,144 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
     }
 
     final String patientIdTexto = patientId.toString();
-    return registros.where((registro) {
-      return registro['patient_id'] == patientIdTexto;
+    final String? patientName = widget.patientName;
+    final List<Map<String, String>> filtrados = registros.where((registro) {
+      return _registroPerteneceAlPaciente(
+        registro,
+        patientIdTexto,
+        patientName,
+      );
     }).toList();
+
+    return filtrados;
+  }
+
+  bool _registroPerteneceAlPaciente(
+    Map<String, dynamic> registro,
+    String patientId,
+    String? patientName,
+  ) {
+    final String? normalizado = _leerTexto(registro['patient_id_normalizado']);
+
+    if (normalizado != null &&
+        _normalizarIdPaciente(normalizado) == patientId) {
+      return true;
+    }
+
+    final String patientIdRegistro = _extraerPatientIdRegistro(registro);
+    if (_normalizarIdPaciente(patientIdRegistro) == patientId) {
+      return true;
+    }
+
+    final String nombreObjetivo = _normalizarNombrePaciente(patientName);
+    if (nombreObjetivo.isEmpty) {
+      return false;
+    }
+
+    return _extraerNombresRegistro(registro).any((nombre) {
+      return _normalizarNombrePaciente(nombre) == nombreObjetivo;
+    });
+  }
+
+  String _extraerPatientIdRegistro(Map<String, dynamic> registro) {
+    final dynamic patient = registro['patient'];
+    if (patient is Map) {
+      final dynamic nestedId =
+          patient['id'] ??
+          patient['patient_id'] ??
+          patient['patientId'] ??
+          patient['paciente_id'] ??
+          patient['pacienteId'] ??
+          patient['pk'];
+
+      if (nestedId != null && nestedId.toString().trim().isNotEmpty) {
+        return nestedId.toString();
+      }
+    }
+
+    final dynamic paciente = registro['paciente'];
+    if (paciente is Map) {
+      final dynamic nestedId =
+          paciente['id'] ??
+          paciente['patient_id'] ??
+          paciente['patientId'] ??
+          paciente['paciente_id'] ??
+          paciente['pacienteId'] ??
+          paciente['pk'];
+
+      if (nestedId != null && nestedId.toString().trim().isNotEmpty) {
+        return nestedId.toString();
+      }
+    }
+
+    final dynamic directId =
+        registro['patient_id'] ??
+        registro['patientId'] ??
+        registro['paciente_id'] ??
+        registro['pacienteId'];
+
+    if (directId != null && directId.toString().trim().isNotEmpty) {
+      return directId.toString();
+    }
+
+    final dynamic rawPatient = registro['patient'];
+    if (rawPatient != null && rawPatient is! Map) {
+      return rawPatient.toString();
+    }
+
+    return '';
+  }
+
+  String _normalizarIdPaciente(String valor) {
+    return valor
+        .replaceFirst(RegExp(r'^Paciente:\s*', caseSensitive: false), '')
+        .trim();
+  }
+
+  List<String> _extraerNombresRegistro(Map<String, dynamic> registro) {
+    final List<String> nombres = [];
+
+    void agregar(dynamic valor) {
+      final String? texto = _leerTexto(valor);
+      if (texto != null) {
+        nombres.add(texto);
+      }
+    }
+
+    agregar(registro['patient_name']);
+    agregar(registro['nombre_paciente']);
+    agregar(registro['paciente_nombre']);
+    agregar(registro['username']);
+    agregar(registro['name']);
+
+    final dynamic patient = registro['patient'];
+    if (patient is Map) {
+      agregar(patient['username']);
+      agregar(patient['name']);
+      agregar(patient['full_name']);
+      agregar(patient['nombre']);
+    } else {
+      agregar(patient);
+    }
+
+    final dynamic paciente = registro['paciente'];
+    if (paciente is Map) {
+      agregar(paciente['username']);
+      agregar(paciente['name']);
+      agregar(paciente['full_name']);
+      agregar(paciente['nombre']);
+    } else {
+      agregar(paciente);
+    }
+
+    return nombres;
+  }
+
+  String _normalizarNombrePaciente(String? valor) {
+    return (valor ?? '')
+        .replaceFirst(RegExp(r'^Paciente:\s*', caseSensitive: false), '')
+        .trim()
+        .toLowerCase();
   }
 
   List<Map<String, String>> _aplicarFiltrosPacienteFecha(
@@ -404,12 +960,7 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
             final registrosReales = snapshot.hasError
                 ? <Map<String, String>>[]
                 : (snapshot.data ?? <Map<String, String>>[]);
-            final bool usandoFiltroExterno = widget.registrosFiltrados != null;
-            final bool usandoDatosDemo =
-                !usandoFiltroExterno && registrosReales.isEmpty;
-            final registrosBase = usandoDatosDemo
-                ? _obtenerRegistrosDemo()
-                : registrosReales;
+            final registrosBase = registrosReales;
             final registrosPorPaciente = _filtrarRegistrosPorPaciente(
               registrosBase,
             );
@@ -434,11 +985,6 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
 
             return Column(
               children: [
-                if (usandoDatosDemo)
-                  const _DemoNotice(
-                    message:
-                        'Mostrando datos demo porque la API no devolvió registros clínicos.',
-                  ),
                 if (mostrarFiltros)
                   _RecordFiltersCard(
                     mostrarBusquedaPaciente: _mostrarFiltroPaciente,
@@ -470,7 +1016,6 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
                             return _VitalRecordCard(
                               registro: registro,
                               showPatient: _mostrarPacienteEnTarjetas,
-                              isDemo: usandoDatosDemo,
                               onTap: () => _abrirDetalleRegistro(registro),
                             );
                           },
@@ -507,44 +1052,6 @@ class _ScreenLoading extends StatelessWidget {
                 fontSize: 18,
                 height: 1.35,
                 color: _clinicalTextSecondary,
-              ),
-            ),
-          ],
-        ),
-      ),
-    );
-  }
-}
-
-class _DemoNotice extends StatelessWidget {
-  const _DemoNotice({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Padding(
-      padding: const EdgeInsets.fromLTRB(
-        AppTheme.spacingMd,
-        AppTheme.spacingMd,
-        AppTheme.spacingMd,
-        0,
-      ),
-      child: EcronoCard(
-        padding: const EdgeInsets.all(AppTheme.spacingMd),
-        child: Row(
-          crossAxisAlignment: CrossAxisAlignment.start,
-          children: [
-            const Icon(Icons.info, color: _clinicalHeaderBlue),
-            const SizedBox(width: AppTheme.spacingSm),
-            Expanded(
-              child: Text(
-                message,
-                style: const TextStyle(
-                  fontSize: 12,
-                  height: 1.35,
-                  color: _clinicalTextPrimary,
-                ),
               ),
             ),
           ],
@@ -886,13 +1393,11 @@ class _VitalRecordCard extends StatelessWidget {
     required this.registro,
     required this.onTap,
     this.showPatient = true,
-    this.isDemo = false,
   });
 
   final Map<String, String> registro;
   final VoidCallback onTap;
   final bool showPatient;
-  final bool isDemo;
 
   @override
   Widget build(BuildContext context) {
@@ -916,6 +1421,7 @@ class _VitalRecordCard extends StatelessWidget {
         ? 'No informado'
         : '${registro['glucosa']} mg/dL';
     final String patientName = _nombrePaciente();
+    final bool estaPendiente = registro['sync_status'] == 'pending';
 
     return Semantics(
       button: true,
@@ -979,6 +1485,10 @@ class _VitalRecordCard extends StatelessWidget {
                             color: _clinicalTextPrimary,
                           ),
                         ),
+                        if (estaPendiente) ...[
+                          const SizedBox(height: 4),
+                          const _PendingSyncInlineBadge(),
+                        ],
                       ],
                     ),
                   ),
@@ -1022,13 +1532,6 @@ class _VitalRecordCard extends StatelessWidget {
                     semaforo: estadoGlucosa,
                   ),
                   const Spacer(),
-                  if (isDemo) ...[
-                    const EcronoStatusBadge(
-                      text: 'Demo',
-                      status: EcronoStatusType.info,
-                    ),
-                    const SizedBox(width: 8),
-                  ],
                   _SummaryDetailAction(onTap: onTap),
                 ],
               ),
@@ -1093,6 +1596,30 @@ class _SummaryDetailAction extends StatelessWidget {
           ],
         ),
       ),
+    );
+  }
+}
+
+class _PendingSyncInlineBadge extends StatelessWidget {
+  const _PendingSyncInlineBadge();
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: const [
+        Icon(Icons.sync_problem, size: 13, color: AppTheme.pendingOrange),
+        SizedBox(width: 4),
+        Text(
+          'Pendiente de sincronizar',
+          style: TextStyle(
+            fontSize: 11,
+            height: 1.2,
+            fontWeight: FontWeight.w700,
+            color: AppTheme.pendingOrange,
+          ),
+        ),
+      ],
     );
   }
 }

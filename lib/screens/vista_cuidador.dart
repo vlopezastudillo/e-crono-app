@@ -80,8 +80,9 @@ class _VistaCuidadorState extends State<VistaCuidador> {
             : estadoFallback;
 
         return _PacienteCuidador(
-          patientId: _leerPatientId(paciente['patient_id']),
+          patientId: _leerPatientIdPaciente(paciente),
           nombre: paciente['patient'] ?? 'No disponible',
+          datos: paciente,
           parentesco: paciente['parentesco'] ?? 'No disponible',
           esPrincipal: paciente['es_principal'] == 'Sí',
           estadoClinico: estado,
@@ -93,6 +94,16 @@ class _VistaCuidadorState extends State<VistaCuidador> {
 
   int? _leerPatientId(String? valor) {
     return int.tryParse(valor ?? '');
+  }
+
+  int? _leerPatientIdPaciente(Map<String, String> paciente) {
+    return _leerPatientId(
+      paciente['patient_id'] ??
+          paciente['patientId'] ??
+          paciente['paciente_id'] ??
+          paciente['pacienteId'] ??
+          paciente['id'],
+    );
   }
 
   Future<void> _cerrarSesion(BuildContext context) async {
@@ -112,12 +123,10 @@ class _VistaCuidadorState extends State<VistaCuidador> {
 
   @override
   Widget build(BuildContext context) {
-    return _PantallaDemoRol(
+    return _PantallaRol(
       titulo: 'Seguimiento del cuidador',
       mensajeBienvenida:
           'Revisa a las personas a tu cargo y apoya el seguimiento de sus controles.',
-      mensajeDemo:
-          'Desde aquí puedes consultar pacientes vinculados, revisar controles recientes y acompañar la continuidad del cuidado.',
       icono: Icons.people,
       textoBotonPrincipal: 'Ver pacientes a cargo',
       textoBotonSecundario: 'Registros clínicos',
@@ -151,6 +160,7 @@ class _PacienteCuidador {
   const _PacienteCuidador({
     required this.patientId,
     required this.nombre,
+    required this.datos,
     required this.parentesco,
     required this.esPrincipal,
     required this.estadoClinico,
@@ -159,18 +169,17 @@ class _PacienteCuidador {
 
   final int? patientId;
   final String nombre;
+  final Map<String, String> datos;
   final String parentesco;
   final bool esPrincipal;
   final SeguimientoClinicoEstado? estadoClinico;
   final bool usandoFallbackGlobal;
 }
 
-// Widget reutilizable para una demo simple por rol.
-class _PantallaDemoRol extends StatelessWidget {
-  const _PantallaDemoRol({
+class _PantallaRol extends StatelessWidget {
+  const _PantallaRol({
     required this.titulo,
     required this.mensajeBienvenida,
-    required this.mensajeDemo,
     required this.icono,
     required this.textoBotonPrincipal,
     required this.textoBotonSecundario,
@@ -182,7 +191,6 @@ class _PantallaDemoRol extends StatelessWidget {
 
   final String titulo;
   final String mensajeBienvenida;
-  final String mensajeDemo;
   final IconData icono;
   final String textoBotonPrincipal;
   final String textoBotonSecundario;
@@ -192,9 +200,8 @@ class _PantallaDemoRol extends StatelessWidget {
   final VoidCallback? onBotonSecundario;
 
   void _mostrarMensaje(BuildContext context, String accion) {
-    // Muestra un aviso simple para funciones aun no implementadas.
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text('$accion estará disponible pronto en esta demo.')),
+      SnackBar(content: Text('$accion estará disponible pronto.')),
     );
   }
 
@@ -261,10 +268,7 @@ class _PantallaDemoRol extends StatelessWidget {
                 child: Column(
                   crossAxisAlignment: CrossAxisAlignment.stretch,
                   children: [
-                    _CaregiverPatientsSummary(
-                      dashboardFuture: dashboardFuture,
-                      mensajeDemo: mensajeDemo,
-                    ),
+                    _CaregiverPatientsSummary(dashboardFuture: dashboardFuture),
                     const SizedBox(height: AppTheme.spacingMd),
                     const _CaregiverSectionTitle(
                       title: 'Acciones rápidas',
@@ -331,22 +335,18 @@ class _CaregiverCard extends StatelessWidget {
 }
 
 class _CaregiverPatientsSummary extends StatelessWidget {
-  const _CaregiverPatientsSummary({
-    required this.dashboardFuture,
-    required this.mensajeDemo,
-  });
+  const _CaregiverPatientsSummary({required this.dashboardFuture});
 
   final Future<_CaregiverDashboardData>? dashboardFuture;
-  final String mensajeDemo;
 
   @override
   Widget build(BuildContext context) {
     final Future<_CaregiverDashboardData>? future = dashboardFuture;
 
     if (future == null) {
-      return _CaregiverCard(
-        padding: const EdgeInsets.all(AppTheme.spacingLg),
-        child: _CaregiverDemoSummary(mensajeDemo: mensajeDemo),
+      return const _CaregiverCard(
+        padding: EdgeInsets.all(AppTheme.spacingLg),
+        child: _CaregiverEmptySummary(),
       );
     }
 
@@ -359,7 +359,6 @@ class _CaregiverPatientsSummary extends StatelessWidget {
         return _CaregiverPatientsContent(
           pacientes: pacientes,
           isLoading: snapshot.connectionState != ConnectionState.done,
-          mensajeDemo: mensajeDemo,
         );
       },
     );
@@ -370,12 +369,10 @@ class _CaregiverPatientsContent extends StatelessWidget {
   const _CaregiverPatientsContent({
     required this.pacientes,
     required this.isLoading,
-    required this.mensajeDemo,
   });
 
   final List<_PacienteCuidador> pacientes;
   final bool isLoading;
-  final String mensajeDemo;
 
   @override
   Widget build(BuildContext context) {
@@ -387,9 +384,9 @@ class _CaregiverPatientsContent extends StatelessWidget {
     }
 
     if (pacientes.isEmpty) {
-      return _CaregiverCard(
-        padding: const EdgeInsets.all(AppTheme.spacingLg),
-        child: _CaregiverDemoSummary(mensajeDemo: mensajeDemo),
+      return const _CaregiverCard(
+        padding: EdgeInsets.all(AppTheme.spacingLg),
+        child: _CaregiverEmptySummary(),
       );
     }
 
@@ -412,32 +409,20 @@ class _CaregiverPatientsContent extends StatelessWidget {
   }
 }
 
-class _CaregiverDemoSummary extends StatelessWidget {
-  const _CaregiverDemoSummary({required this.mensajeDemo});
-
-  final String mensajeDemo;
+class _CaregiverEmptySummary extends StatelessWidget {
+  const _CaregiverEmptySummary();
 
   @override
   Widget build(BuildContext context) {
-    return Column(
-      crossAxisAlignment: CrossAxisAlignment.start,
-      children: [
-        const Text('Vista demostrativa', style: _caregiverSectionTitleStyle),
-        const SizedBox(height: AppTheme.spacingSm),
-        Text(
-          mensajeDemo,
-          style: const TextStyle(
-            fontSize: 12,
-            height: 1.35,
-            color: _caregiverTextSecondary,
-          ),
-        ),
-        const SizedBox(height: AppTheme.spacingMd),
-        const EcronoStatusBadge(
-          text: 'Modo demo',
-          status: EcronoStatusType.info,
-        ),
-      ],
+    return const Text(
+      'No hay datos disponibles',
+      textAlign: TextAlign.center,
+      style: TextStyle(
+        fontSize: 13,
+        height: 1.35,
+        color: _caregiverTextSecondary,
+        fontWeight: FontWeight.w700,
+      ),
     );
   }
 }
@@ -578,10 +563,13 @@ class _CaregiverPatientCard extends StatelessWidget {
       return;
     }
 
+    final String patientName =
+        paciente.datos['nombre'] ?? paciente.datos['name'] ?? paciente.nombre;
+
     AppNavigation.abrirRegistrosPaciente(
       context,
       patientId: patientId,
-      patientName: paciente.nombre,
+      patientName: patientName,
     );
   }
 

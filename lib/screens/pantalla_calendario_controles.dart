@@ -170,10 +170,7 @@ class _PantallaCalendarioControlesState
             final List<Map<String, String>> registrosReales = snapshot.hasError
                 ? <Map<String, String>>[]
                 : snapshot.data ?? <Map<String, String>>[];
-            final bool usandoDatosDemo = registrosReales.isEmpty;
-            final List<Map<String, String>> registros = usandoDatosDemo
-                ? _registrosService.obtenerRegistrosDemoPaciente()
-                : registrosReales;
+            final List<Map<String, String>> registros = registrosReales;
             final Map<DateTime, int> registrosPorDia = _agruparRegistrosPorDia(
               registros,
             );
@@ -186,13 +183,6 @@ class _PantallaCalendarioControlesState
                   child: Column(
                     crossAxisAlignment: CrossAxisAlignment.stretch,
                     children: [
-                      if (usandoDatosDemo) ...[
-                        const _DemoNotice(
-                          message:
-                              'Mostrando datos demo porque la API no devolvió registros clínicos.',
-                        ),
-                        const SizedBox(height: AppTheme.spacingMd),
-                      ],
                       _CalendarMonthCard(
                         mesVisible: _mesVisible,
                         registrosPorDia: registrosPorDia,
@@ -237,41 +227,6 @@ class _CalendarLoading extends StatelessWidget {
             ),
           ],
         ),
-      ),
-    );
-  }
-}
-
-class _DemoNotice extends StatelessWidget {
-  const _DemoNotice({required this.message});
-
-  final String message;
-
-  @override
-  Widget build(BuildContext context) {
-    return Container(
-      padding: const EdgeInsets.all(16),
-      decoration: BoxDecoration(
-        color: Colors.white,
-        borderRadius: BorderRadius.circular(AppTheme.radiusMd),
-        border: Border.all(color: _calendarBorder),
-      ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.start,
-        children: [
-          const Icon(Icons.info, color: _calendarHeaderBlue),
-          const SizedBox(width: AppTheme.spacingSm),
-          Expanded(
-            child: Text(
-              message,
-              style: const TextStyle(
-                fontSize: 14,
-                height: 1.35,
-                color: _calendarTextPrimary,
-              ),
-            ),
-          ),
-        ],
       ),
     );
   }

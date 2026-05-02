@@ -26,3 +26,4 @@ String get apiMedicationRemindersUrl => '$apiBaseUrl/api/medication-reminders/';
 
 // URL para login en el backend
 String get apiLoginUrl => '$apiBaseUrl/api/login/';
+String get apiTokenRefreshUrl => '$apiBaseUrl/api/token/refresh/';
