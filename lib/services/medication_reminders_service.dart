@@ -13,6 +13,8 @@ class MedicationReminder {
     this.id,
     this.patient,
     this.patientId,
+    this.tomado = false,
+    this.tomadoEn,
   });
 
   final String? id;
@@ -23,6 +25,8 @@ class MedicationReminder {
   final String hora;
   final String frecuencia;
   final bool activo;
+  final bool tomado;
+  final String? tomadoEn;
 }
 
 class MedicationRemindersResult {
@@ -41,6 +45,22 @@ class MedicationRemindersService {
     required String hora,
     required String frecuencia,
   }) async {
+    return crearRecordatorio(
+      nombreMedicamento: nombre,
+      dosis: dosis,
+      hora: hora,
+      frecuencia: frecuencia,
+      patientId: patientId,
+    );
+  }
+
+  Future<void> crearRecordatorio({
+    required String nombreMedicamento,
+    required String dosis,
+    required String hora,
+    required String frecuencia,
+    int? patientId,
+  }) async {
     final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
     if (!headers.containsKey('Authorization')) {
@@ -48,13 +68,15 @@ class MedicationRemindersService {
     }
 
     final Map<String, dynamic> body = {
-      'patient': patientId,
-      'nombre_medicamento': nombre,
+      'nombre_medicamento': nombreMedicamento,
       'dosis': dosis,
       'hora': hora,
       'frecuencia': frecuencia,
-      'activo': true,
     };
+
+    if (patientId != null) {
+      body['patient'] = patientId;
+    }
 
     try {
       final response = await SessionHelper.authenticatedPost(
@@ -121,6 +143,55 @@ class MedicationRemindersService {
       rethrow;
     } catch (_) {
       return _resultadoVacio();
+    }
+  }
+
+  Future<void> marcarComoTomado(int reminderId) {
+    return _actualizarEstadoTomado(reminderId: reminderId, tomado: true);
+  }
+
+  Future<void> marcarComoPendiente(int reminderId) {
+    return _actualizarEstadoTomado(reminderId: reminderId, tomado: false);
+  }
+
+  Future<void> _actualizarEstadoTomado({
+    required int reminderId,
+    required bool tomado,
+  }) async {
+    final Map<String, String> headers = await SessionHelper.getAuthHeaders();
+
+    if (!headers.containsKey('Authorization')) {
+      throw const SessionExpiredException();
+    }
+
+    try {
+      final response = await SessionHelper.authenticatedPatch(
+        Uri.parse('$apiMedicationRemindersUrl$reminderId/'),
+        body: jsonEncode({'tomado': tomado}),
+      );
+
+      if (response.statusCode == 200 || response.statusCode == 204) {
+        return;
+      }
+
+      if (response.statusCode == 400) {
+        throw MedicationReminderUpdateException(
+          _leerMensajeError(response.body) ??
+              'No se pudo actualizar el recordatorio.',
+        );
+      }
+
+      throw const MedicationReminderUpdateException(
+        'No se pudo actualizar el recordatorio. Intenta nuevamente.',
+      );
+    } on SessionExpiredException {
+      rethrow;
+    } on MedicationReminderUpdateException {
+      rethrow;
+    } catch (_) {
+      throw const MedicationReminderUpdateException(
+        'No se pudo conectar con el servidor.',
+      );
     }
   }
 
@@ -192,6 +263,12 @@ class MedicationRemindersService {
           _leerTexto(recordatorio['frequency']) ??
           'Frecuencia no informada',
       activo: _leerBool(recordatorio['activo'] ?? recordatorio['active']),
+      tomado: _leerBoolOpcional(
+        recordatorio['tomado'] ?? recordatorio['taken'],
+      ),
+      tomadoEn:
+          _leerTexto(recordatorio['tomado_en']) ??
+          _leerTexto(recordatorio['taken_at']),
     );
   }
 
@@ -226,6 +303,19 @@ class MedicationRemindersService {
 
     if (texto.isEmpty) {
       return true;
+    }
+
+    return texto == 'true' || texto == '1' || texto == 'sí' || texto == 'si';
+  }
+
+  static bool _leerBoolOpcional(dynamic valor) {
+    if (valor is bool) {
+      return valor;
+    }
+
+    final String texto = valor?.toString().trim().toLowerCase() ?? '';
+    if (texto.isEmpty || texto == 'null') {
+      return false;
     }
 
     return texto == 'true' || texto == '1' || texto == 'sí' || texto == 'si';
@@ -281,6 +371,15 @@ class MedicationRemindersService {
 
 class MedicationReminderCreateException implements Exception {
   const MedicationReminderCreateException(this.message);
+
+  final String message;
+
+  @override
+  String toString() => message;
+}
+
+class MedicationReminderUpdateException implements Exception {
+  const MedicationReminderUpdateException(this.message);
 
   final String message;
 

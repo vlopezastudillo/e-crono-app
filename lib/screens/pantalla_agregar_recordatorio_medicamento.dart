@@ -1,6 +1,9 @@
+import 'dart:async';
+
 import 'package:flutter/material.dart';
 
 import '../services/medication_reminders_service.dart';
+import '../services/notification_service.dart';
 import '../services/pacientes_cuidador_service.dart';
 import '../session_expired_handler.dart';
 import '../session_helper.dart';
@@ -41,6 +44,7 @@ class _PantallaAgregarRecordatorioMedicamentoState
       const PacientesCuidadorService();
   final TextEditingController _nombreController = TextEditingController();
   final TextEditingController _dosisController = TextEditingController();
+  late final Future<String?> _roleFuture;
   late final Future<List<Map<String, String>>> _pacientesFuture;
   int? _selectedPatientId;
   String? _selectedHour;
@@ -54,7 +58,8 @@ class _PantallaAgregarRecordatorioMedicamentoState
   void initState() {
     super.initState();
     _selectedPatientId = widget.patientId;
-    _pacientesFuture = _cargarPacientesACargo();
+    _roleFuture = SessionHelper.getRole();
+    _pacientesFuture = _cargarPacientesSiCorresponde();
   }
 
   @override
@@ -69,11 +74,6 @@ class _PantallaAgregarRecordatorioMedicamentoState
     final String nombre = _nombreController.text.trim();
     final String dosis = _dosisController.text.trim();
     final String? frecuencia = _selectedFrequency;
-
-    if (patientId == null) {
-      _mostrarMensaje('Selecciona un paciente antes de guardar.');
-      return;
-    }
 
     if (nombre.isEmpty) {
       _mostrarMensaje('Ingresa el nombre del medicamento.');
@@ -116,12 +116,27 @@ class _PantallaAgregarRecordatorioMedicamentoState
     });
 
     try {
-      await _recordatoriosService.createMedicationReminder(
+      await _recordatoriosService.crearRecordatorio(
         patientId: patientId,
-        nombre: nombre,
+        nombreMedicamento: nombre,
         dosis: dosis,
         hora: hora,
         frecuencia: frecuencia,
+      );
+      unawaited(
+        NotificationService.scheduleMedicationReminder(
+          id: _notificationIdForMedicationReminder(
+            patientId: patientId,
+            nombre: nombre,
+            dosis: dosis,
+            hora: hora,
+            frecuencia: frecuencia,
+          ),
+          nombre: nombre,
+          dosis: dosis,
+          hora: hora,
+          frecuencia: frecuencia,
+        ),
       );
 
       if (!mounted) {
@@ -154,8 +169,13 @@ class _PantallaAgregarRecordatorioMedicamentoState
     }
   }
 
-  Future<List<Map<String, String>>> _cargarPacientesACargo() async {
+  Future<List<Map<String, String>>> _cargarPacientesSiCorresponde() async {
     try {
+      final String? role = await _roleFuture;
+      if (!_esRolCuidador(role) || widget.patientId != null) {
+        return [];
+      }
+
       return await _pacientesService.cargarPacientesACargo();
     } on SessionExpiredException catch (error) {
       _manejarSesionExpirada(error);
@@ -202,6 +222,29 @@ class _PantallaAgregarRecordatorioMedicamentoState
     return '$formattedHour:$minute';
   }
 
+  int _notificationIdForMedicationReminder({
+    required int? patientId,
+    required String nombre,
+    required String dosis,
+    required String hora,
+    required String frecuencia,
+  }) {
+    final String source = [
+      patientId?.toString() ?? 'patient',
+      nombre,
+      dosis,
+      hora,
+      frecuencia,
+    ].join('|');
+    int hash = 17;
+
+    for (final int codeUnit in source.codeUnits) {
+      hash = (hash * 31 + codeUnit) & 0x1fffffff;
+    }
+
+    return hash == 0 ? 1 : hash;
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -230,6 +273,7 @@ class _PantallaAgregarRecordatorioMedicamentoState
               _PatientTargetSection(
                 fixedPatientId: widget.patientId,
                 fixedPatientName: widget.patientName,
+                roleFuture: _roleFuture,
                 pacientesFuture: _pacientesFuture,
                 selectedPatientId: _selectedPatientId,
                 onPatientSelected: (patient) {
@@ -303,12 +347,18 @@ class _PantallaAgregarRecordatorioMedicamentoState
       ),
     );
   }
+
+  bool _esRolCuidador(String? role) {
+    final String roleNormalizado = role?.toLowerCase().trim() ?? '';
+    return roleNormalizado == 'caregiver' || roleNormalizado == 'cuidador';
+  }
 }
 
 class _PatientTargetSection extends StatelessWidget {
   const _PatientTargetSection({
     required this.fixedPatientId,
     required this.fixedPatientName,
+    required this.roleFuture,
     required this.pacientesFuture,
     required this.selectedPatientId,
     required this.onPatientSelected,
@@ -316,6 +366,7 @@ class _PatientTargetSection extends StatelessWidget {
 
   final int? fixedPatientId;
   final String? fixedPatientName;
+  final Future<String?> roleFuture;
   final Future<List<Map<String, String>>> pacientesFuture;
   final int? selectedPatientId;
   final ValueChanged<_PatientOption?> onPatientSelected;
@@ -349,106 +400,124 @@ class _PatientTargetSection extends StatelessWidget {
       );
     }
 
-    return FutureBuilder<List<Map<String, String>>>(
-      future: pacientesFuture,
-      builder: (context, snapshot) {
-        if (snapshot.connectionState != ConnectionState.done) {
-          return const EcronoCard(
-            padding: EdgeInsets.all(14),
-            child: Row(
-              children: [
-                SizedBox(
-                  width: 20,
-                  height: 20,
-                  child: CircularProgressIndicator(strokeWidth: 2),
-                ),
-                SizedBox(width: 12),
-                Expanded(
-                  child: Text(
-                    'Cargando pacientes...',
-                    style: TextStyle(color: _medicationTextSecondary),
-                  ),
-                ),
-              ],
-            ),
-          );
+    return FutureBuilder<String?>(
+      future: roleFuture,
+      builder: (context, roleSnapshot) {
+        if (roleSnapshot.connectionState != ConnectionState.done) {
+          return const SizedBox.shrink();
         }
 
-        final List<_PatientOption> patientOptions =
-            (snapshot.data ?? <Map<String, String>>[])
-                .map(_PatientOption.fromMap)
-                .whereType<_PatientOption>()
-                .toList();
+        if (!_esRolCuidador(roleSnapshot.data)) {
+          return const SizedBox.shrink();
+        }
 
-        if (patientOptions.isEmpty) {
-          return const EcronoCard(
-            padding: EdgeInsets.all(14),
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Icon(Icons.info, color: _medicationHeaderBlue),
-                SizedBox(width: 10),
-                Expanded(
-                  child: Text(
-                    'No se encontraron pacientes disponibles.',
-                    style: TextStyle(
-                      color: AppTheme.textPrimary,
-                      fontSize: 14,
-                      height: 1.35,
+        return FutureBuilder<List<Map<String, String>>>(
+          future: pacientesFuture,
+          builder: (context, snapshot) {
+            if (snapshot.connectionState != ConnectionState.done) {
+              return const EcronoCard(
+                padding: EdgeInsets.all(14),
+                child: Row(
+                  children: [
+                    SizedBox(
+                      width: 20,
+                      height: 20,
+                      child: CircularProgressIndicator(strokeWidth: 2),
                     ),
+                    SizedBox(width: 12),
+                    Expanded(
+                      child: Text(
+                        'Cargando pacientes...',
+                        style: TextStyle(color: _medicationTextSecondary),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            final List<_PatientOption> patientOptions =
+                (snapshot.data ?? <Map<String, String>>[])
+                    .map(_PatientOption.fromMap)
+                    .whereType<_PatientOption>()
+                    .toList();
+
+            if (patientOptions.isEmpty) {
+              return const EcronoCard(
+                padding: EdgeInsets.all(14),
+                child: Row(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Icon(Icons.info, color: _medicationHeaderBlue),
+                    SizedBox(width: 10),
+                    Expanded(
+                      child: Text(
+                        'No se encontraron pacientes disponibles.',
+                        style: TextStyle(
+                          color: AppTheme.textPrimary,
+                          fontSize: 14,
+                          height: 1.35,
+                        ),
+                      ),
+                    ),
+                  ],
+                ),
+              );
+            }
+
+            final Set<int> availableIds = patientOptions
+                .map((patient) => patient.id)
+                .toSet();
+            final int? dropdownValue = availableIds.contains(selectedPatientId)
+                ? selectedPatientId
+                : null;
+
+            return EcronoCard(
+              padding: const EdgeInsets.all(14),
+              child: DropdownButtonFormField<int>(
+                initialValue: dropdownValue,
+                isExpanded: true,
+                decoration: InputDecoration(
+                  labelText: 'Paciente',
+                  prefixIcon: const Icon(
+                    Icons.person,
+                    color: _medicationHeaderBlue,
+                  ),
+                  border: OutlineInputBorder(
+                    borderRadius: BorderRadius.circular(AppTheme.radiusSm),
+                    borderSide: const BorderSide(color: AppTheme.borderGray),
                   ),
                 ),
-              ],
-            ),
-          );
-        }
+                hint: const Text('Selecciona un paciente'),
+                items: patientOptions.map((patient) {
+                  return DropdownMenuItem<int>(
+                    value: patient.id,
+                    child: Text(patient.name),
+                  );
+                }).toList(),
+                onChanged: (patientId) {
+                  _PatientOption? selectedPatient;
 
-        final Set<int> availableIds = patientOptions
-            .map((patient) => patient.id)
-            .toSet();
-        final int? dropdownValue = availableIds.contains(selectedPatientId)
-            ? selectedPatientId
-            : null;
+                  for (final patient in patientOptions) {
+                    if (patient.id == patientId) {
+                      selectedPatient = patient;
+                      break;
+                    }
+                  }
 
-        return EcronoCard(
-          padding: const EdgeInsets.all(14),
-          child: DropdownButtonFormField<int>(
-            initialValue: dropdownValue,
-            isExpanded: true,
-            decoration: InputDecoration(
-              labelText: 'Paciente',
-              prefixIcon: const Icon(
-                Icons.person,
-                color: _medicationHeaderBlue,
+                  onPatientSelected(selectedPatient);
+                },
               ),
-              border: OutlineInputBorder(
-                borderRadius: BorderRadius.circular(AppTheme.radiusSm),
-                borderSide: const BorderSide(color: AppTheme.borderGray),
-              ),
-            ),
-            hint: const Text('Selecciona un paciente'),
-            items: patientOptions.map((patient) {
-              return DropdownMenuItem<int>(
-                value: patient.id,
-                child: Text(patient.name),
-              );
-            }).toList(),
-            onChanged: (patientId) {
-              _PatientOption? selectedPatient;
-
-              for (final patient in patientOptions) {
-                if (patient.id == patientId) {
-                  selectedPatient = patient;
-                  break;
-                }
-              }
-
-              onPatientSelected(selectedPatient);
-            },
-          ),
+            );
+          },
         );
       },
     );
+  }
+
+  static bool _esRolCuidador(String? role) {
+    final String roleNormalizado = role?.toLowerCase().trim() ?? '';
+    return roleNormalizado == 'caregiver' || roleNormalizado == 'cuidador';
   }
 }
 

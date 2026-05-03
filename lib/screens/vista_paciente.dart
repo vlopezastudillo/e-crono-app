@@ -7,6 +7,7 @@ import '../api_constants.dart';
 import '../services/medication_reminders_service.dart';
 import '../session_expired_handler.dart';
 import '../session_helper.dart';
+import 'pantalla_agregar_recordatorio_medicamento.dart';
 import 'pantalla_inicial.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
@@ -47,6 +48,7 @@ class _VistaPacienteState extends State<VistaPaciente> {
   late Future<_PacienteResumen?> _pacienteFuture;
   late Future<MedicationRemindersResult> _recordatoriosFuture;
   bool _manejandoSesionExpirada = false;
+  int? _recordatorioMarcandoId;
 
   @override
   void initState() {
@@ -118,6 +120,59 @@ class _VistaPacienteState extends State<VistaPaciente> {
     });
   }
 
+  Future<void> _marcarRecordatorioComoTomado(
+    MedicationReminder recordatorio,
+  ) async {
+    final int? reminderId = int.tryParse(recordatorio.id ?? '');
+    if (reminderId == null) {
+      _mostrarMensaje('No se pudo identificar el recordatorio.');
+      return;
+    }
+
+    setState(() {
+      _recordatorioMarcandoId = reminderId;
+    });
+
+    try {
+      await _medicationRemindersService.marcarComoTomado(reminderId);
+
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _recordatorioMarcandoId = null;
+        _recordatoriosFuture = _medicationRemindersService
+            .cargarRecordatorios();
+      });
+      _mostrarMensaje('Recordatorio marcado como tomado.');
+    } on SessionExpiredException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _recordatorioMarcandoId = null;
+      });
+      _manejarSesionExpirada(error);
+    } on MedicationReminderUpdateException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _recordatorioMarcandoId = null;
+      });
+      _mostrarMensaje(error.message);
+    }
+  }
+
+  void _mostrarMensaje(String mensaje) {
+    ScaffoldMessenger.of(context)
+      ..hideCurrentSnackBar()
+      ..showSnackBar(SnackBar(content: Text(mensaje)));
+  }
+
   String? _leerTexto(dynamic valor) {
     final String texto = valor?.toString().trim() ?? '';
     return texto.isEmpty ? null : texto;
@@ -149,6 +204,23 @@ class _VistaPacienteState extends State<VistaPaciente> {
 
   void _abrirCalendarioControles(BuildContext context) {
     AppNavigation.abrirCalendarioControles(context);
+  }
+
+  Future<void> _abrirAgregarRecordatorioMedicamento() async {
+    final bool? creado = await Navigator.push<bool>(
+      context,
+      MaterialPageRoute(
+        builder: (_) => const PantallaAgregarRecordatorioMedicamento(),
+      ),
+    );
+
+    if (!mounted || creado != true) {
+      return;
+    }
+
+    setState(() {
+      _recordatoriosFuture = _medicationRemindersService.cargarRecordatorios();
+    });
   }
 
   @override
@@ -269,6 +341,15 @@ class _VistaPacienteState extends State<VistaPaciente> {
                 icon: Icons.medication,
               ),
               const SizedBox(height: 8),
+              Padding(
+                padding: const EdgeInsets.symmetric(horizontal: 16),
+                child: EcronoPrimaryButton(
+                  text: 'Agregar medicamento',
+                  icon: Icons.add,
+                  onPressed: _abrirAgregarRecordatorioMedicamento,
+                ),
+              ),
+              const SizedBox(height: 12),
               FutureBuilder<MedicationRemindersResult>(
                 future: _recordatoriosFuture,
                 builder: (context, snapshot) {
@@ -292,6 +373,8 @@ class _VistaPacienteState extends State<VistaPaciente> {
 
                   return _MedicationRemindersBlock(
                     recordatorios: recordatoriosActivos,
+                    recordatorioMarcandoId: _recordatorioMarcandoId,
+                    onMarcarComoTomado: _marcarRecordatorioComoTomado,
                   );
                 },
               ),
@@ -687,9 +770,15 @@ class _MedicationRemindersLoading extends StatelessWidget {
 }
 
 class _MedicationRemindersBlock extends StatelessWidget {
-  const _MedicationRemindersBlock({required this.recordatorios});
+  const _MedicationRemindersBlock({
+    required this.recordatorios,
+    required this.recordatorioMarcandoId,
+    required this.onMarcarComoTomado,
+  });
 
   final List<MedicationReminder> recordatorios;
+  final int? recordatorioMarcandoId;
+  final ValueChanged<MedicationReminder> onMarcarComoTomado;
 
   @override
   Widget build(BuildContext context) {
@@ -727,7 +816,12 @@ class _MedicationRemindersBlock extends StatelessWidget {
               yield const SizedBox(height: 12);
             }
 
-            yield _MedicationItem(recordatorio: recordatorio);
+            yield _MedicationItem(
+              recordatorio: recordatorio,
+              marcandoComoTomado:
+                  int.tryParse(recordatorio.id ?? '') == recordatorioMarcandoId,
+              onMarcarComoTomado: () => onMarcarComoTomado(recordatorio),
+            );
           }),
         ],
       ),
@@ -736,12 +830,39 @@ class _MedicationRemindersBlock extends StatelessWidget {
 }
 
 class _MedicationItem extends StatelessWidget {
-  const _MedicationItem({required this.recordatorio});
+  const _MedicationItem({
+    required this.recordatorio,
+    required this.marcandoComoTomado,
+    required this.onMarcarComoTomado,
+  });
 
   final MedicationReminder recordatorio;
+  final bool marcandoComoTomado;
+  final VoidCallback onMarcarComoTomado;
+
+  String? _formatearTomadoEn(String? valor) {
+    final String texto = valor?.trim() ?? '';
+    if (texto.isEmpty) {
+      return null;
+    }
+
+    try {
+      final DateTime fecha = DateTime.parse(texto).toLocal();
+      final String dia = fecha.day.toString().padLeft(2, '0');
+      final String mes = fecha.month.toString().padLeft(2, '0');
+      final String hora = fecha.hour.toString().padLeft(2, '0');
+      final String minuto = fecha.minute.toString().padLeft(2, '0');
+      return '$dia-$mes-${fecha.year} $hora:$minuto';
+    } catch (_) {
+      return texto;
+    }
+  }
 
   @override
   Widget build(BuildContext context) {
+    final bool tomado = recordatorio.tomado;
+    final String? tomadoEn = _formatearTomadoEn(recordatorio.tomadoEn);
+
     return Container(
       padding: const EdgeInsets.all(14),
       decoration: BoxDecoration(
@@ -749,43 +870,111 @@ class _MedicationItem extends StatelessWidget {
         border: Border.all(color: _dashboardBorder),
         borderRadius: BorderRadius.circular(16),
       ),
-      child: Row(
-        crossAxisAlignment: CrossAxisAlignment.center,
+      child: Column(
+        crossAxisAlignment: CrossAxisAlignment.stretch,
         children: [
-          Container(
-            width: 34,
-            height: 34,
-            decoration: BoxDecoration(
-              color: const Color(0xFFEFF6FF),
-              borderRadius: BorderRadius.circular(17),
-            ),
-            child: const Icon(
-              Icons.medication,
-              color: _dashboardHeaderBlue,
-              size: 18,
-            ),
+          Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Container(
+                width: 34,
+                height: 34,
+                decoration: BoxDecoration(
+                  color: const Color(0xFFEFF6FF),
+                  borderRadius: BorderRadius.circular(17),
+                ),
+                child: const Icon(
+                  Icons.medication,
+                  color: _dashboardHeaderBlue,
+                  size: 18,
+                ),
+              ),
+              const SizedBox(width: 12),
+              Expanded(
+                child: Column(
+                  crossAxisAlignment: CrossAxisAlignment.start,
+                  children: [
+                    Text(
+                      recordatorio.nombreMedicamento,
+                      style: const TextStyle(
+                        fontSize: 13,
+                        fontWeight: FontWeight.w700,
+                        color: Color(0xFF1F2937),
+                      ),
+                    ),
+                    const SizedBox(height: 4),
+                    Text(
+                      '${recordatorio.dosis} • ${recordatorio.hora} • ${recordatorio.frecuencia}',
+                      style: _dashboardDescriptionStyle,
+                    ),
+                    if (tomadoEn != null) ...[
+                      const SizedBox(height: 4),
+                      Text(
+                        'Tomado: $tomadoEn',
+                        style: _dashboardDescriptionStyle,
+                      ),
+                    ],
+                  ],
+                ),
+              ),
+              const SizedBox(width: 8),
+              EcronoStatusBadge(
+                text: tomado ? 'Tomado' : 'Pendiente',
+                status: tomado
+                    ? EcronoStatusType.success
+                    : EcronoStatusType.warning,
+              ),
+            ],
           ),
-          const SizedBox(width: 12),
-          Expanded(
-            child: Column(
-              crossAxisAlignment: CrossAxisAlignment.start,
-              children: [
-                Text(
-                  recordatorio.nombreMedicamento,
-                  style: const TextStyle(
-                    fontSize: 13,
-                    fontWeight: FontWeight.w700,
-                    color: Color(0xFF1F2937),
+          if (!tomado) ...[
+            const SizedBox(height: 12),
+            SizedBox(
+              height: 48,
+              child: OutlinedButton.icon(
+                onPressed: marcandoComoTomado ? null : onMarcarComoTomado,
+                icon: marcandoComoTomado
+                    ? const SizedBox(
+                        width: 18,
+                        height: 18,
+                        child: CircularProgressIndicator(strokeWidth: 2),
+                      )
+                    : const Icon(Icons.check_circle_outline, size: 18),
+                label: Text(
+                  marcandoComoTomado ? 'Marcando...' : 'Marcar como tomado',
+                  overflow: TextOverflow.ellipsis,
+                ),
+                style: OutlinedButton.styleFrom(
+                  foregroundColor: _dashboardHeaderBlue,
+                  padding: const EdgeInsets.symmetric(
+                    horizontal: 14,
+                    vertical: 12,
+                  ),
+                  side: const BorderSide(color: _dashboardBorder),
+                  shape: RoundedRectangleBorder(
+                    borderRadius: BorderRadius.circular(8),
                   ),
                 ),
-                const SizedBox(height: 4),
-                Text(
-                  '${recordatorio.dosis} • ${recordatorio.hora} • ${recordatorio.frecuencia}',
-                  style: _dashboardDescriptionStyle,
+              ),
+            ),
+          ] else ...[
+            const SizedBox(height: 8),
+            const Row(
+              children: [
+                Icon(
+                  Icons.check_circle,
+                  size: 16,
+                  color: AppTheme.successGreen,
+                ),
+                SizedBox(width: 6),
+                Expanded(
+                  child: Text(
+                    'Este recordatorio ya fue marcado como tomado.',
+                    style: _dashboardDescriptionStyle,
+                  ),
                 ),
               ],
             ),
-          ),
+          ],
         ],
       ),
     );

@@ -240,6 +240,18 @@ class SessionHelper {
     return _reintentarPostSiNoAutorizado(uri, response, body: body);
   }
 
+  static Future<http.Response> authenticatedPatch(
+    Uri uri, {
+    Object? body,
+  }) async {
+    final response = await http.patch(
+      uri,
+      headers: await getAuthHeaders(),
+      body: body,
+    );
+    return _reintentarPatchSiNoAutorizado(uri, response, body: body);
+  }
+
   static Future<http.Response> _reintentarGetSiNoAutorizado(
     Uri uri,
     http.Response response,
@@ -282,6 +294,35 @@ class SessionHelper {
     }
 
     final retryResponse = await http.post(
+      uri,
+      headers: await getAuthHeaders(),
+      body: body,
+    );
+    if (_esRespuestaSesionExpirada(retryResponse)) {
+      throw SessionExpiredException(statusCode: retryResponse.statusCode);
+    }
+
+    return retryResponse;
+  }
+
+  static Future<http.Response> _reintentarPatchSiNoAutorizado(
+    Uri uri,
+    http.Response response, {
+    Object? body,
+  }) async {
+    if (response.statusCode == 403) {
+      throw SessionExpiredException(statusCode: response.statusCode);
+    }
+
+    if (response.statusCode != 401) {
+      return response;
+    }
+
+    if (!await refrescarAccessToken()) {
+      throw SessionExpiredException(statusCode: response.statusCode);
+    }
+
+    final retryResponse = await http.patch(
       uri,
       headers: await getAuthHeaders(),
       body: body,
