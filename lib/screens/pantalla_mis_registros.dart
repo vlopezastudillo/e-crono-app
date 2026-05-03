@@ -7,6 +7,7 @@ import '../route_observer.dart';
 import '../services/offline_vital_signs_service.dart';
 import '../services/pacientes_cuidador_service.dart';
 import '../services/registros_clinicos_service.dart';
+import '../session_expired_handler.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_ui.dart';
@@ -47,6 +48,7 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
   DateTime? _fechaFiltro;
   bool _suscritoARuta = false;
   bool _autoSyncEjecutado = false;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
@@ -115,7 +117,13 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
       }
 
       intentoSincronizar = true;
-      final bool sincronizado = await _sincronizarRegistroPendiente(registro);
+      final bool sincronizado;
+      try {
+        sincronizado = await _sincronizarRegistroPendiente(registro);
+      } on SessionExpiredException catch (error) {
+        _manejarSesionExpirada(error);
+        return;
+      }
       if (!sincronizado) {
         huboFallas = true;
         continue;
@@ -158,6 +166,8 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
       );
 
       return response.statusCode >= 200 && response.statusCode < 300;
+    } on SessionExpiredException {
+      rethrow;
     } catch (_) {
       return false;
     }
@@ -178,28 +188,48 @@ class _PantallaMisRegistrosState extends State<PantallaMisRegistros>
   }
 
   Future<List<Map<String, String>>> _cargarRegistrosIniciales() async {
-    final List<Map<String, String>>? registrosFiltrados =
-        widget.registrosFiltrados;
-    final Map<String, Map<String, String>> pacientesPorId =
-        await _cargarPacientesLocalesPorId();
+    try {
+      final List<Map<String, String>>? registrosFiltrados =
+          widget.registrosFiltrados;
+      final Map<String, Map<String, String>> pacientesPorId =
+          await _cargarPacientesLocalesPorId();
 
-    if (registrosFiltrados != null) {
-      final List<Map<String, String>> registrosPendientes =
-          await _cargarRegistrosPendientesCompatibles(pacientesPorId);
+      if (registrosFiltrados != null) {
+        final List<Map<String, String>> registrosPendientes =
+            await _cargarRegistrosPendientesCompatibles(pacientesPorId);
 
-      return _prepararRegistrosParaVista([
-        ..._filtrarRegistrosPendientesParaVista(registrosPendientes),
-        ...registrosFiltrados,
-      ], pacientesPorId);
+        return _prepararRegistrosParaVista([
+          ..._filtrarRegistrosPendientesParaVista(registrosPendientes),
+          ...registrosFiltrados,
+        ], pacientesPorId);
+      }
+
+      final List<Map<String, dynamic>> registrosConsolidados =
+          await RegistrosClinicosService.obtenerRegistrosConsolidados();
+
+      return _prepararRegistrosParaVista(
+        registrosConsolidados.map(_mapearRegistroConsolidadoParaVista).toList(),
+        pacientesPorId,
+      );
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return [];
+    }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
     }
 
-    final List<Map<String, dynamic>> registrosConsolidados =
-        await RegistrosClinicosService.obtenerRegistrosConsolidados();
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
 
-    return _prepararRegistrosParaVista(
-      registrosConsolidados.map(_mapearRegistroConsolidadoParaVista).toList(),
-      pacientesPorId,
-    );
+      handleSessionExpired(context, error: error);
+    });
   }
 
   Future<void> _cargarRolUsuario() async {

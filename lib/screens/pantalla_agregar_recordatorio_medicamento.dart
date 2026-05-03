@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../services/medication_reminders_service.dart';
 import '../services/pacientes_cuidador_service.dart';
+import '../session_expired_handler.dart';
+import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_ui.dart';
 
@@ -46,12 +48,13 @@ class _PantallaAgregarRecordatorioMedicamentoState
   String? _selectedPeriod;
   String? _selectedFrequency;
   bool _guardando = false;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
     super.initState();
     _selectedPatientId = widget.patientId;
-    _pacientesFuture = _pacientesService.cargarPacientesACargo();
+    _pacientesFuture = _cargarPacientesACargo();
   }
 
   @override
@@ -130,6 +133,15 @@ class _PantallaAgregarRecordatorioMedicamentoState
       messenger.showSnackBar(
         const SnackBar(content: Text('Recordatorio creado correctamente')),
       );
+    } on SessionExpiredException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _guardando = false;
+      });
+      _manejarSesionExpirada(error);
     } on MedicationReminderCreateException catch (error) {
       if (!mounted) {
         return;
@@ -140,6 +152,30 @@ class _PantallaAgregarRecordatorioMedicamentoState
       });
       _mostrarMensaje(error.message);
     }
+  }
+
+  Future<List<Map<String, String>>> _cargarPacientesACargo() async {
+    try {
+      return await _pacientesService.cargarPacientesACargo();
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return [];
+    }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
+    }
+
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      handleSessionExpired(context, error: error);
+    });
   }
 
   void _mostrarMensaje(String mensaje) {

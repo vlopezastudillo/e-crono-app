@@ -4,6 +4,7 @@ import '../app_navigation.dart';
 import '../services/pacientes_cuidador_service.dart';
 import '../services/registros_clinicos_service.dart';
 import '../services/seguimiento_clinico_service.dart';
+import '../session_expired_handler.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
@@ -49,6 +50,7 @@ class _VistaCuidadorState extends State<VistaCuidador> {
   final SeguimientoClinicoService _seguimientoService =
       const SeguimientoClinicoService();
   late Future<_CaregiverDashboardData> _dashboardFuture;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
@@ -58,38 +60,58 @@ class _VistaCuidadorState extends State<VistaCuidador> {
   }
 
   Future<_CaregiverDashboardData> _cargarDashboardCuidador() async {
-    final results = await Future.wait([
-      _pacientesService.cargarPacientesACargo(),
-      _registrosService.cargarMisRegistros(),
-    ]);
-    final List<Map<String, String>> pacientes = results[0];
-    final List<Map<String, String>> registros = results[1];
-    final bool hayCruce = _seguimientoService.existeCrucePacienteRegistro(
-      pacientes,
-      registros,
-    );
-    final SeguimientoClinicoEstado? estadoFallback = _seguimientoService
-        .calcularEstado(registros);
+    try {
+      final results = await Future.wait([
+        _pacientesService.cargarPacientesACargo(),
+        _registrosService.cargarMisRegistros(),
+      ]);
+      final List<Map<String, String>> pacientes = results[0];
+      final List<Map<String, String>> registros = results[1];
+      final bool hayCruce = _seguimientoService.existeCrucePacienteRegistro(
+        pacientes,
+        registros,
+      );
+      final SeguimientoClinicoEstado? estadoFallback = _seguimientoService
+          .calcularEstado(registros);
 
-    return _CaregiverDashboardData(
-      pacientes: pacientes.map((paciente) {
-        final List<Map<String, String>> registrosPaciente = _seguimientoService
-            .registrosDelPaciente(paciente, registros);
-        final SeguimientoClinicoEstado? estado = hayCruce
-            ? _seguimientoService.calcularEstado(registrosPaciente)
-            : estadoFallback;
+      return _CaregiverDashboardData(
+        pacientes: pacientes.map((paciente) {
+          final List<Map<String, String>> registrosPaciente =
+              _seguimientoService.registrosDelPaciente(paciente, registros);
+          final SeguimientoClinicoEstado? estado = hayCruce
+              ? _seguimientoService.calcularEstado(registrosPaciente)
+              : estadoFallback;
 
-        return _PacienteCuidador(
-          patientId: _leerPatientIdPaciente(paciente),
-          nombre: paciente['patient'] ?? 'No disponible',
-          datos: paciente,
-          parentesco: paciente['parentesco'] ?? 'No disponible',
-          esPrincipal: paciente['es_principal'] == 'Sí',
-          estadoClinico: estado,
-          usandoFallbackGlobal: !hayCruce && estadoFallback != null,
-        );
-      }).toList(),
-    );
+          return _PacienteCuidador(
+            patientId: _leerPatientIdPaciente(paciente),
+            nombre: paciente['patient'] ?? 'No disponible',
+            datos: paciente,
+            parentesco: paciente['parentesco'] ?? 'No disponible',
+            esPrincipal: paciente['es_principal'] == 'Sí',
+            estadoClinico: estado,
+            usandoFallbackGlobal: !hayCruce && estadoFallback != null,
+          );
+        }).toList(),
+      );
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return const _CaregiverDashboardData(pacientes: []);
+    }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
+    }
+
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      handleSessionExpired(context, error: error);
+    });
   }
 
   int? _leerPatientId(String? valor) {

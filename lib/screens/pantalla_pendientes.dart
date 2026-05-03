@@ -4,6 +4,7 @@ import '../app_navigation.dart';
 import '../services/pacientes_cuidador_service.dart';
 import '../services/registros_clinicos_service.dart';
 import '../services/seguimiento_clinico_service.dart';
+import '../session_expired_handler.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
@@ -29,6 +30,7 @@ class _PantallaPendientesState extends State<PantallaPendientes> {
   final SeguimientoClinicoService _seguimientoService =
       const SeguimientoClinicoService();
   late Future<_PendientesData> _pendientesFuture;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
@@ -37,25 +39,45 @@ class _PantallaPendientesState extends State<PantallaPendientes> {
   }
 
   Future<_PendientesData> _cargarPendientes() async {
-    final String? role = await SessionHelper.getRole();
-    final bool esCuidador = _esRolCuidador(role);
+    try {
+      final String? role = await SessionHelper.getRole();
+      final bool esCuidador = _esRolCuidador(role);
 
-    if (esCuidador) {
-      final results = await Future.wait([
-        _pacientesService.cargarPacientesACargo(),
-        _registrosService.cargarMisRegistros(),
-      ]);
+      if (esCuidador) {
+        final results = await Future.wait([
+          _pacientesService.cargarPacientesACargo(),
+          _registrosService.cargarMisRegistros(),
+        ]);
 
-      return _PendientesData.cuidador(
-        pacientes: results[0],
-        registros: results[1],
-      );
+        return _PendientesData.cuidador(
+          pacientes: results[0],
+          registros: results[1],
+        );
+      }
+
+      final List<Map<String, String>> registros = await _registrosService
+          .cargarMisRegistros();
+
+      return _PendientesData.paciente(registros: registros);
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return const _PendientesData.paciente(registros: []);
+    }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
     }
 
-    final List<Map<String, String>> registros = await _registrosService
-        .cargarMisRegistros();
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
 
-    return _PendientesData.paciente(registros: registros);
+      handleSessionExpired(context, error: error);
+    });
   }
 
   bool _esRolCuidador(String? role) {

@@ -18,7 +18,7 @@ class RegistrosClinicosService {
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
       if (!headers.containsKey('Authorization')) {
-        return _cargarRegistrosLocales();
+        throw const SessionExpiredException();
       }
 
       final response = await SessionHelper.authenticatedGet(
@@ -55,6 +55,8 @@ class RegistrosClinicosService {
 
       await _guardarRegistrosLocales(registrosMapeados);
       return registrosMapeados;
+    } on SessionExpiredException {
+      rethrow;
     } catch (_) {
       return _cargarRegistrosLocales();
     }
@@ -104,6 +106,8 @@ class RegistrosClinicosService {
       return registrosOrdenados
           .map((registro) => Map<String, dynamic>.from(registro))
           .toList();
+    } on SessionExpiredException {
+      rethrow;
     } catch (_) {
       return [];
     }

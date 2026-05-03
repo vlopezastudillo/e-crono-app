@@ -6,6 +6,19 @@ import 'package:shared_preferences/shared_preferences.dart';
 import 'api_constants.dart';
 import 'services/secure_session_storage.dart';
 
+class SessionExpiredException implements Exception {
+  const SessionExpiredException({
+    this.message = 'Tu sesión expiró. Inicia sesión nuevamente.',
+    this.statusCode,
+  });
+
+  final String message;
+  final int? statusCode;
+
+  @override
+  String toString() => message;
+}
+
 /// Helper simple para guardar y recuperar la sesión del usuario.
 /// Usa almacenamiento seguro para el token y SharedPreferences para datos no sensibles.
 class SessionHelper {
@@ -231,11 +244,24 @@ class SessionHelper {
     Uri uri,
     http.Response response,
   ) async {
-    if (response.statusCode != 401 || !await refrescarAccessToken()) {
+    if (response.statusCode == 403) {
+      throw SessionExpiredException(statusCode: response.statusCode);
+    }
+
+    if (response.statusCode != 401) {
       return response;
     }
 
-    return http.get(uri, headers: await getAuthHeaders());
+    if (!await refrescarAccessToken()) {
+      throw SessionExpiredException(statusCode: response.statusCode);
+    }
+
+    final retryResponse = await http.get(uri, headers: await getAuthHeaders());
+    if (_esRespuestaSesionExpirada(retryResponse)) {
+      throw SessionExpiredException(statusCode: retryResponse.statusCode);
+    }
+
+    return retryResponse;
   }
 
   static Future<http.Response> _reintentarPostSiNoAutorizado(
@@ -243,11 +269,32 @@ class SessionHelper {
     http.Response response, {
     Object? body,
   }) async {
-    if (response.statusCode != 401 || !await refrescarAccessToken()) {
+    if (response.statusCode == 403) {
+      throw SessionExpiredException(statusCode: response.statusCode);
+    }
+
+    if (response.statusCode != 401) {
       return response;
     }
 
-    return http.post(uri, headers: await getAuthHeaders(), body: body);
+    if (!await refrescarAccessToken()) {
+      throw SessionExpiredException(statusCode: response.statusCode);
+    }
+
+    final retryResponse = await http.post(
+      uri,
+      headers: await getAuthHeaders(),
+      body: body,
+    );
+    if (_esRespuestaSesionExpirada(retryResponse)) {
+      throw SessionExpiredException(statusCode: retryResponse.statusCode);
+    }
+
+    return retryResponse;
+  }
+
+  static bool _esRespuestaSesionExpirada(http.Response response) {
+    return response.statusCode == 401 || response.statusCode == 403;
   }
 
   static String? _leerTexto(dynamic valor) {

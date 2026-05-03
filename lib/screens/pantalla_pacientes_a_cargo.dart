@@ -2,6 +2,8 @@ import 'package:flutter/material.dart';
 
 import '../app_navigation.dart';
 import '../services/pacientes_cuidador_service.dart';
+import '../session_expired_handler.dart';
+import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import '../widgets/ecrono_ui.dart';
 
@@ -23,12 +25,37 @@ class _PantallaPacientesACargoState extends State<PantallaPacientesACargo> {
   final PacientesCuidadorService _pacientesService =
       const PacientesCuidadorService();
   late Future<List<Map<String, String>>> _pacientesFuture;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
     super.initState();
     // Carga la lista de pacientes al abrir la pantalla.
-    _pacientesFuture = _pacientesService.cargarPacientesACargo();
+    _pacientesFuture = _cargarPacientesACargo();
+  }
+
+  Future<List<Map<String, String>>> _cargarPacientesACargo() async {
+    try {
+      return await _pacientesService.cargarPacientesACargo();
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return [];
+    }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
+    }
+
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      handleSessionExpired(context, error: error);
+    });
   }
 
   EcronoStatusType _obtenerTipoEstadoPaciente(String estado) {

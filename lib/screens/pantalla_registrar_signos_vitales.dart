@@ -6,6 +6,7 @@ import '../app_navigation.dart';
 import '../api_constants.dart';
 import '../services/offline_vital_signs_service.dart';
 import '../services/pacientes_cuidador_service.dart';
+import '../session_expired_handler.dart';
 import '../session_helper.dart';
 import '../widgets/ecrono_bottom_navigation.dart';
 import '../widgets/ecrono_ui.dart';
@@ -82,6 +83,7 @@ class _PantallaRegistrarSignosVitalesState
   String? _selectedPatientName;
   bool _guardandoRegistro = false;
   bool _sincronizandoPendientes = false;
+  bool _manejandoSesionExpirada = false;
   int _registrosPendientesSincronizacion = 0;
 
   TextEditingController get _presionSistolicaInputController =>
@@ -105,7 +107,7 @@ class _PantallaRegistrarSignosVitalesState
     _glucosaController = TextEditingController();
     _observacionesController = TextEditingController();
     _roleFuture = SessionHelper.getRole();
-    _pacientesFuture = _pacientesService.cargarPacientesACargo();
+    _pacientesFuture = _cargarPacientesACargo();
     _selectedPatientId = widget.patientId;
     _selectedPatientName = widget.patientName;
     _cargarRegistrosPendientesSincronizacion();
@@ -186,15 +188,27 @@ class _PantallaRegistrarSignosVitalesState
       _guardandoRegistro = true;
     });
 
-    final Map<String, dynamic>? datosRegistro =
-        await _construirDatosRegistroParaEnvio(
-          presionSistolica: presionSistolica,
-          presionDiastolica: presionDiastolica,
-          frecuenciaCardiaca: frecuenciaCardiaca,
-          glucosa: glucosa,
-          observaciones: observaciones,
-          patientIdParaRegistro: patientIdParaRegistro,
-        );
+    final Map<String, dynamic>? datosRegistro;
+    try {
+      datosRegistro = await _construirDatosRegistroParaEnvio(
+        presionSistolica: presionSistolica,
+        presionDiastolica: presionDiastolica,
+        frecuenciaCardiaca: frecuenciaCardiaca,
+        glucosa: glucosa,
+        observaciones: observaciones,
+        patientIdParaRegistro: patientIdParaRegistro,
+      );
+    } on SessionExpiredException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _guardandoRegistro = false;
+      });
+      _manejarSesionExpirada(error);
+      return;
+    }
 
     if (datosRegistro == null) {
       if (!mounted) {
@@ -208,9 +222,22 @@ class _PantallaRegistrarSignosVitalesState
       return;
     }
 
-    final int? codigoEstadoHttp = await _enviarRegistroAlBackend(
-      datosRegistro: datosRegistro,
-    );
+    final int? codigoEstadoHttp;
+    try {
+      codigoEstadoHttp = await _enviarRegistroAlBackend(
+        datosRegistro: datosRegistro,
+      );
+    } on SessionExpiredException catch (error) {
+      if (!mounted) {
+        return;
+      }
+
+      setState(() {
+        _guardandoRegistro = false;
+      });
+      _manejarSesionExpirada(error);
+      return;
+    }
     final bool guardadoEnBackend =
         codigoEstadoHttp != null &&
         codigoEstadoHttp >= 200 &&
@@ -352,9 +379,22 @@ class _PantallaRegistrarSignosVitalesState
 
       final Map<String, dynamic> datosRegistro =
           _prepararRegistroPendienteParaBackend(registro);
-      final int? codigoEstadoHttp = await _enviarRegistroAlBackend(
-        datosRegistro: datosRegistro,
-      );
+      final int? codigoEstadoHttp;
+      try {
+        codigoEstadoHttp = await _enviarRegistroAlBackend(
+          datosRegistro: datosRegistro,
+        );
+      } on SessionExpiredException catch (error) {
+        if (!mounted) {
+          return;
+        }
+
+        setState(() {
+          _sincronizandoPendientes = false;
+        });
+        _manejarSesionExpirada(error);
+        return;
+      }
       final bool sincronizado =
           codigoEstadoHttp != null &&
           codigoEstadoHttp >= 200 &&
@@ -483,20 +523,24 @@ class _PantallaRegistrarSignosVitalesState
         datosRegistro['glucosa'] = glucosa;
       }
 
+      if (!haySesion) {
+        throw const SessionExpiredException();
+      }
+
       if (patientIdParaRegistro != null) {
         datosRegistro['patient'] = patientIdParaRegistro;
-      } else if (haySesion && !esCuidador) {
+      } else if (!esCuidador) {
         // En el flujo paciente se mantiene el comportamiento actual.
         if (patientIdGuardado != null) {
           datosRegistro['patient'] = patientIdGuardado;
         }
-      } else if (haySesion && esCuidador) {
-        return null;
-      } else {
+      } else if (esCuidador) {
         return null;
       }
 
       return datosRegistro;
+    } on SessionExpiredException {
+      rethrow;
     } catch (_) {
       return null;
     }
@@ -514,9 +558,35 @@ class _PantallaRegistrarSignosVitalesState
       );
 
       return response.statusCode;
+    } on SessionExpiredException {
+      rethrow;
     } catch (_) {
       return null;
     }
+  }
+
+  Future<List<Map<String, String>>> _cargarPacientesACargo() async {
+    try {
+      return await _pacientesService.cargarPacientesACargo();
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return [];
+    }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
+    }
+
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      handleSessionExpired(context, error: error);
+    });
   }
 
   Map<String, dynamic> _prepararRegistroPendienteParaBackend(

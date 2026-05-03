@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import '../app_navigation.dart';
 import '../api_constants.dart';
 import '../services/medication_reminders_service.dart';
+import '../session_expired_handler.dart';
 import '../session_helper.dart';
 import 'pantalla_inicial.dart';
 import '../theme/app_theme.dart';
@@ -45,6 +46,7 @@ class _VistaPacienteState extends State<VistaPaciente> {
       const MedicationRemindersService();
   late Future<_PacienteResumen?> _pacienteFuture;
   late Future<MedicationRemindersResult> _recordatoriosFuture;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
@@ -60,7 +62,7 @@ class _VistaPacienteState extends State<VistaPaciente> {
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
       if (!headers.containsKey('Authorization')) {
-        return null;
+        throw const SessionExpiredException();
       }
 
       final response = await SessionHelper.authenticatedGet(
@@ -93,9 +95,27 @@ class _VistaPacienteState extends State<VistaPaciente> {
         direccion: _leerTexto(patient['direccion']),
         observaciones: _leerTexto(patient['observaciones']),
       );
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return null;
     } catch (_) {
       return null;
     }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
+    }
+
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      handleSessionExpired(context, error: error);
+    });
   }
 
   String? _leerTexto(dynamic valor) {
@@ -253,6 +273,12 @@ class _VistaPacienteState extends State<VistaPaciente> {
                 future: _recordatoriosFuture,
                 builder: (context, snapshot) {
                   if (snapshot.connectionState != ConnectionState.done) {
+                    return const _MedicationRemindersLoading();
+                  }
+
+                  final Object? error = snapshot.error;
+                  if (error is SessionExpiredException) {
+                    _manejarSesionExpirada(error);
                     return const _MedicationRemindersLoading();
                   }
 

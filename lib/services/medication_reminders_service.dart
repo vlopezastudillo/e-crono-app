@@ -44,7 +44,7 @@ class MedicationRemindersService {
     final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
     if (!headers.containsKey('Authorization')) {
-      throw const MedicationReminderCreateException('Sesión inválida.');
+      throw const SessionExpiredException();
     }
 
     final Map<String, dynamic> body = {
@@ -79,13 +79,11 @@ class MedicationRemindersService {
         );
       }
 
-      if (response.statusCode == 401) {
-        throw const MedicationReminderCreateException('Sesión inválida.');
-      }
-
       throw const MedicationReminderCreateException(
         'No se pudo crear el recordatorio. Intenta nuevamente.',
       );
+    } on SessionExpiredException {
+      rethrow;
     } on MedicationReminderCreateException {
       rethrow;
     } catch (_) {
@@ -100,7 +98,7 @@ class MedicationRemindersService {
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
       if (!headers.containsKey('Authorization')) {
-        return _resultadoVacio();
+        throw const SessionExpiredException();
       }
 
       final response = await SessionHelper.authenticatedGet(
@@ -119,6 +117,8 @@ class MedicationRemindersService {
           .toList();
 
       return MedicationRemindersResult(recordatorios: recordatorios);
+    } on SessionExpiredException {
+      rethrow;
     } catch (_) {
       return _resultadoVacio();
     }

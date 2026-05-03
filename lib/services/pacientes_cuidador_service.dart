@@ -15,7 +15,7 @@ class PacientesCuidadorService {
       final Map<String, String> headers = await SessionHelper.getAuthHeaders();
 
       if (!headers.containsKey('Authorization')) {
-        return _cargarPacientesLocales();
+        throw const SessionExpiredException();
       }
 
       final response = await SessionHelper.authenticatedGet(
@@ -39,6 +39,8 @@ class PacientesCuidadorService {
 
       await _guardarPacientesLocales(pacientes);
       return pacientes;
+    } on SessionExpiredException {
+      rethrow;
     } catch (_) {
       return _cargarPacientesLocales();
     }

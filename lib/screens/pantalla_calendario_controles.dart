@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../services/registros_clinicos_service.dart';
+import '../session_expired_handler.dart';
+import '../session_helper.dart';
 import '../theme/app_theme.dart';
 import 'pantalla_mis_registros.dart';
 
@@ -51,13 +53,38 @@ class _PantallaCalendarioControlesState
       const RegistrosClinicosService();
   late Future<List<Map<String, String>>> _registrosFuture;
   late DateTime _mesVisible;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
     super.initState();
     final DateTime hoy = DateTime.now();
     _mesVisible = DateTime(hoy.year, hoy.month);
-    _registrosFuture = _registrosService.cargarMisRegistros();
+    _registrosFuture = _cargarRegistros();
+  }
+
+  Future<List<Map<String, String>>> _cargarRegistros() async {
+    try {
+      return await _registrosService.cargarMisRegistros();
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return [];
+    }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
+    }
+
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      handleSessionExpired(context, error: error);
+    });
   }
 
   void _irAlMesAnterior() {

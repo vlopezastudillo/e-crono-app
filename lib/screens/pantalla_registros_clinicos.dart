@@ -3,6 +3,7 @@ import 'dart:convert';
 import 'package:flutter/material.dart';
 
 import '../api_constants.dart';
+import '../session_expired_handler.dart';
 import '../session_helper.dart';
 import '../theme/app_theme.dart';
 
@@ -25,6 +26,7 @@ class PantallaRegistrosClinicos extends StatefulWidget {
 
 class _PantallaRegistrosClinicosState extends State<PantallaRegistrosClinicos> {
   late Future<List<Map<String, String>>> _registrosFuture;
+  bool _manejandoSesionExpirada = false;
 
   @override
   void initState() {
@@ -96,9 +98,27 @@ class _PantallaRegistrosClinicosState extends State<PantallaRegistrosClinicos> {
               'Sin observaciones',
         };
       }).toList();
+    } on SessionExpiredException catch (error) {
+      _manejarSesionExpirada(error);
+      return [];
     } catch (_) {
       return [];
     }
+  }
+
+  void _manejarSesionExpirada(SessionExpiredException error) {
+    if (_manejandoSesionExpirada) {
+      return;
+    }
+
+    _manejandoSesionExpirada = true;
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) {
+        return;
+      }
+
+      handleSessionExpired(context, error: error);
+    });
   }
 
   @override
